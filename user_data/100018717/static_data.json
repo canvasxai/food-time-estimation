@@ -1,0 +1,39 @@
+{
+  "age": 43,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus, Hyperlipidaemia, unspecified",
+  "medication": [
+    {
+      "name": "GLYCOMET500MG",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "OXRA 10MG TAB",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "ROSUVAS 10MG TAB",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "LACTIFIBER Syrup",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian"
+  ],
+  "weight": 87.26
+}

@@ -1,0 +1,46 @@
+{
+  "age": 42,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus: without complications",
+  "medication": [
+    {
+      "name": "RECLIMET XR 60",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "JANUMET 50/500MG",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "TRESIBA INSULIN",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "CARDACE 2.5 TABLET",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "ROSEDAY 10",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian"
+  ],
+  "weight": 71.34
+}

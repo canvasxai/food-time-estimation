@@ -1,0 +1,40 @@
+{
+  "age": 53,
+  "gender": "Female",
+  "diabetes_type": "Prediabetes, Essential (primary) hypertension, Gastro-oesophageal reflux disease without oesophagitis, Sinus Problem",
+  "medication": [
+    {
+      "name": "GLYCOMET 1000MG",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "TELMA 40MG TAB",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "MATILDA FORTE CAP",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "ECOSPRIN-AV 75 CAPSULE",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian",
+    "north_indian"
+  ],
+  "weight": 92.15
+}

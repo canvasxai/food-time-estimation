@@ -1,0 +1,30 @@
+{
+  "age": null,
+  "gender": null,
+  "diabetes_type": "Type 2 diabetes mellitus",
+  "medication": [
+    {
+      "name": "ISTAMET D XR 10/500/100",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "HUMINSULIN 30/70",
+      "dosage": "0-1-0",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "DIAMICRON MR 30",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [],
+  "weight": 52.68
+}

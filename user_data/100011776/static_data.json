@@ -1,0 +1,32 @@
+{
+  "age": 41,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus: without complications",
+  "medication": [
+    {
+      "name": "Glucoryl M1",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "VIDAGLO 50",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "ROZULA 10MG TABLET",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian"
+  ],
+  "weight": 59.0
+}

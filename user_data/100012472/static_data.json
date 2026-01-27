@@ -1,0 +1,81 @@
+{
+  "age": 76,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus, Essential (primary) hypertension, Current medications include steroids",
+  "medication": [
+    {
+      "name": "GLADOR 2",
+      "dosage": "1-1-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "EMPAZIO S 25/100",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "ROSUMAC F 20",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "CILAMET XL 50MG TAB",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "THYRONORM 75MCG TAB",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "MEGANEURON OD PLUS CAP 10'S",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "ECOSPRIN 75",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "URIMAX 0.4MG CAP 15`S",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "MONTEK AB TAB",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "Gen-D3 Nano 60K",
+      "dosage": "1-0-0",
+      "frequency": "Every week",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "north_indian"
+  ],
+  "weight": 49.66
+}

@@ -1,0 +1,32 @@
+{
+  "age": 45,
+  "gender": "Female",
+  "diabetes_type": "Type 2 diabetes mellitus: without complications",
+  "medication": [
+    {
+      "name": "JODAPA TRIO 10/500/100",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "TAB PIOZIT M 15 MG",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "ROSUVAS 5MG TAB",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian"
+  ],
+  "weight": 61.46
+}

@@ -1,0 +1,18 @@
+{
+  "age": 47,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus, Pure hypercholesterolaemia, Gastritis, unspecified",
+  "medication": [
+    {
+      "name": "Glucoryl M1",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    }
+  ],
+  "cuisine_pref": [
+    "north_indian"
+  ],
+  "weight": 87.67
+}

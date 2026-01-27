@@ -1,0 +1,60 @@
+{
+  "age": 54,
+  "gender": "Female",
+  "diabetes_type": "Type 2 diabetes mellitus, Essential (primary) hypertension",
+  "medication": [
+    {
+      "name": "HUMALOG INSULIN  100IU",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "VOLIX TRIO FORTE 2MG TAB",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "VOLIX 0.2",
+      "dosage": "0-1-0",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "SITARA M 100/500",
+      "dosage": "0-1-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "TELMIKIND-TRIO 40MG/10MG/12.5MG",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "TRIGOTAB (1000mg) (fenugreek Seed Powder)",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "UPRISE D3 60K CAP 4'S",
+      "dosage": "1-0-0",
+      "frequency": "Every week",
+      "instructions": "ANYTIME",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "north_indian"
+  ],
+  "weight": 70.72
+}

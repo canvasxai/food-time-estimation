@@ -1,0 +1,39 @@
+{
+  "age": 51,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus, Asthma, Fissure and fistula of anal and rectal regions",
+  "medication": [
+    {
+      "name": "Metformin SR 500 Mg",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "ECOSPRIN-AV 75 CAPSULE",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "SUPRADYN TAB 15'S",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "SUGARFIT DIABETES PROTEIN CARE POWDER",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian"
+  ],
+  "weight": 70.05
+}

@@ -1,0 +1,16 @@
+{
+  "age": null,
+  "gender": null,
+  "diabetes_type": "Type 2 diabetes mellitus: without complications",
+  "medication": [
+    {
+      "name": "A TO Z GOLD CAP",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [],
+  "weight": 69.43
+}

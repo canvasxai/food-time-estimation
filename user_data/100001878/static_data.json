@@ -1,0 +1,25 @@
+{
+  "age": 59,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus, Essential (primary) hypertension",
+  "medication": [
+    {
+      "name": "GLYCIPHAGE 250 MG TAB",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "Telma H",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "maharashtrian"
+  ],
+  "weight": 84.0
+}

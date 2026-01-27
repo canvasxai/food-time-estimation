@@ -1,0 +1,51 @@
+{
+  "age": 39,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus: without complications",
+  "medication": [
+    {
+      "name": "ZUKANORM M 500 TAB",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "DAPANORM M (10/500)",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "GEMER 1",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "BEPLEX FORTE TAB 15`S",
+      "dosage": "0-0-1",
+      "frequency": "Daily",
+      "instructions": "BEFORE_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "UPRISE D3 60K CAP 4'S",
+      "dosage": "0-0-1",
+      "frequency": "Every week",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "SUGARFIT DIABETES PROTEIN CARE POWDER",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [],
+  "weight": 72.0
+}

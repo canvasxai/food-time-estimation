@@ -1,0 +1,25 @@
+{
+  "age": 52,
+  "gender": "Female",
+  "diabetes_type": "Type 2 diabetes mellitus, Arthritis, unspecified",
+  "medication": [
+    {
+      "name": "Vilda M50/1000",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    },
+    {
+      "name": "Orofer XT",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "maharashtrian"
+  ],
+  "weight": 68.61
+}

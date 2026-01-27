@@ -1,0 +1,18 @@
+{
+  "age": 47,
+  "gender": "Male",
+  "diabetes_type": "Type 2 diabetes mellitus",
+  "medication": [
+    {
+      "name": "GLIPTAGREAT M 500 TABLET",
+      "dosage": "1-0-1",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": true
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian"
+  ],
+  "weight": 107.5
+}

@@ -1,0 +1,34 @@
+{
+  "age": 72,
+  "gender": "Male",
+  "diabetes_type": "",
+  "medication": [
+    {
+      "name": "Nurokind Lc",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "D RISE 60K CAP 4'S",
+      "dosage": "1-0-0",
+      "frequency": "Every 30 days",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    },
+    {
+      "name": "STAMLO 2.5 TAB 30'S",
+      "dosage": "1-0-0",
+      "frequency": "Daily",
+      "instructions": "AFTER_FOOD",
+      "isDiabetesMedicine": false
+    }
+  ],
+  "cuisine_pref": [
+    "south_indian",
+    "north_indian",
+    "chinese"
+  ],
+  "weight": 54.79
+}
