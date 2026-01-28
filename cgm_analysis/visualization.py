@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from .models import MealEvent, MealMatch, SimplifiedThresholds
 from .derivatives import apply_smoothing, calculate_first_derivative, calculate_second_derivative
+from .detection import detect_secondary_meal_events
 
 
 def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEvent],
@@ -70,43 +71,113 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
         row=1, col=1
     )
 
-    # Find and plot second derivative maxima on glucose plot
-    d2G_dt2_values = df["d2G_dt2"].values
-    dG_dt_values = df["dG_dt"].values
+    # Get primary meal events from the events list passed in
+    primary_events = [e for e in events if e.event_type == "MEAL_START"]
 
-    # Determine primary date for filtering
-    primary_date = df["datetime_ist"].dt.date.mode().iloc[0]
+    # Get secondary meal events from detection module (single source of truth)
+    passing_events, filtered_events, merged_events = detect_secondary_meal_events(
+        cgm_df, thresholds, return_filtered=True, primary_events=primary_events
+    )
 
-    maxima_indices = []
-    for i in range(1, len(d2G_dt2_values) - 1):
-        # A meal event requires:
-        # 1. d²G/dt² is at a local maximum (acceleration peak)
-        # 2. d²G/dt² > 0 (positive acceleration)
-        # 3. dG/dt > 0 (glucose is increasing)
-        # When dG/dt <= 0 (glucose falling), it's a "change event", not a meal event
-        if (d2G_dt2_values[i] > d2G_dt2_values[i - 1] and
-            d2G_dt2_values[i] > d2G_dt2_values[i + 1] and
-            d2G_dt2_values[i] > 0 and  # Positive acceleration (d²G/dt² > 0)
-            dG_dt_values[i] > 0):  # Glucose must be rising (dG/dt > 0)
-            detection_datetime = df.iloc[i]["datetime_ist"]
-            detection_date = detection_datetime.date()
-            detection_hour = detection_datetime.hour
-
-            if detection_date == primary_date and detection_hour < thresholds.start_hour:
-                continue
-
-            event_idx = i - 1
-            maxima_indices.append(event_idx)
-
-    if maxima_indices:
-        maxima_times = df.iloc[maxima_indices]["datetime_ist"]
-        maxima_glucose = df.iloc[maxima_indices]["smoothed"]
-        maxima_d2G = df.iloc[maxima_indices]["d2G_dt2"]
+    # Plot merged peaks (orange) - peaks that will be merged with a MEAL_START
+    if merged_events:
+        merged_times = [e.detected_at for e in merged_events]
+        merged_glucose = [e.glucose_at_detection for e in merged_events]
+        merged_d2G = [e.d2G_dt2_at_detection for e in merged_events]
+        merged_dG = [e.dG_dt_at_detection for e in merged_events]
 
         fig.add_trace(
             go.Scatter(
-                x=maxima_times,
-                y=maxima_glucose,
+                x=merged_times,
+                y=merged_glucose,
+                mode="markers",
+                name="d²G/dt² Peak (merged)",
+                marker=dict(
+                    size=10,
+                    color="#E67E22",
+                    symbol="diamond-open",
+                    line=dict(color="#E67E22", width=2)
+                ),
+                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>Glucose:</b> %{y:.1f} mg/dL<br><b>dG/dt:</b> %{customdata[0]:.4f}<br><b>d²G/dt²:</b> %{customdata[1]:.4f}<br><b>Status:</b> Merged with nearby MEAL_START<extra></extra>",
+                customdata=list(zip(merged_dG, merged_d2G))
+            ),
+            row=1, col=1
+        )
+
+        # Add markers on d²G/dt² plot for merged peaks
+        fig.add_trace(
+            go.Scatter(
+                x=merged_times,
+                y=merged_d2G,
+                mode="markers",
+                name="d²G/dt² Peak (merged)",
+                marker=dict(
+                    size=8,
+                    color="#E67E22",
+                    symbol="diamond-open",
+                    line=dict(color="#E67E22", width=2)
+                ),
+                showlegend=False,
+                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>d²G/dt²:</b> %{y:.4f} mg/dL/min²<br><b>Status:</b> Merged<extra></extra>"
+            ),
+            row=3, col=1
+        )
+
+    # Plot filtered peaks (gray) - peaks that don't pass dG/dt threshold
+    if filtered_events:
+        filtered_times = [e.detected_at for e in filtered_events]
+        filtered_glucose = [e.glucose_at_detection for e in filtered_events]
+        filtered_d2G = [e.d2G_dt2_at_detection for e in filtered_events]
+        filtered_dG = [e.dG_dt_at_detection for e in filtered_events]
+
+        fig.add_trace(
+            go.Scatter(
+                x=filtered_times,
+                y=filtered_glucose,
+                mode="markers",
+                name="d²G/dt² Peak (filtered)",
+                marker=dict(
+                    size=10,
+                    color="#95A5A6",
+                    symbol="diamond-open",
+                    line=dict(color="#95A5A6", width=2)
+                ),
+                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>Glucose:</b> %{y:.1f} mg/dL<br><b>dG/dt:</b> %{customdata[0]:.4f}<br><b>d²G/dt²:</b> %{customdata[1]:.4f}<br><b>Status:</b> Filtered (dG/dt below threshold)<extra></extra>",
+                customdata=list(zip(filtered_dG, filtered_d2G))
+            ),
+            row=1, col=1
+        )
+
+        # Add markers on d²G/dt² plot for filtered peaks
+        fig.add_trace(
+            go.Scatter(
+                x=filtered_times,
+                y=filtered_d2G,
+                mode="markers",
+                name="d²G/dt² Peak (filtered)",
+                marker=dict(
+                    size=8,
+                    color="#95A5A6",
+                    symbol="diamond-open",
+                    line=dict(color="#95A5A6", width=2)
+                ),
+                showlegend=False,
+                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>d²G/dt²:</b> %{y:.4f} mg/dL/min²<br><b>Status:</b> Filtered<extra></extra>"
+            ),
+            row=3, col=1
+        )
+
+    # Plot passing peaks (green) - peaks that pass dG/dt threshold
+    if passing_events:
+        passing_times = [e.detected_at for e in passing_events]
+        passing_glucose = [e.glucose_at_detection for e in passing_events]
+        passing_d2G = [e.d2G_dt2_at_detection for e in passing_events]
+        passing_dG = [e.dG_dt_at_detection for e in passing_events]
+
+        fig.add_trace(
+            go.Scatter(
+                x=passing_times,
+                y=passing_glucose,
                 mode="markers",
                 name="Est. Secondary Meal",
                 marker=dict(
@@ -115,16 +186,16 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                     symbol="diamond",
                     line=dict(color="white", width=1)
                 ),
-                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>Glucose:</b> %{y:.1f} mg/dL<br><b>d²G/dt²:</b> %{customdata:.4f}<extra>Est. Secondary Meal</extra>",
-                customdata=maxima_d2G
+                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>Glucose:</b> %{y:.1f} mg/dL<br><b>dG/dt:</b> %{customdata[0]:.4f}<br><b>d²G/dt²:</b> %{customdata[1]:.4f}<extra>Est. Secondary Meal</extra>",
+                customdata=list(zip(passing_dG, passing_d2G))
             ),
             row=1, col=1
         )
 
-        for idx in maxima_indices:
-            sec_meal_time = df.iloc[idx]["datetime_ist"]
+        for event in passing_events:
+            sec_meal_time = event.detected_at
             sec_meal_time_ms = int(sec_meal_time.timestamp() * 1000)
-            sec_meal_glucose = df.iloc[idx]["smoothed"]
+            sec_meal_glucose = event.glucose_at_detection
 
             for row in [1, 2, 3]:
                 fig.add_vline(
@@ -147,10 +218,11 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                 row=1, col=1
             )
 
+        # Add markers on d²G/dt² plot for passing peaks
         fig.add_trace(
             go.Scatter(
-                x=maxima_times,
-                y=maxima_d2G,
+                x=passing_times,
+                y=passing_d2G,
                 mode="markers",
                 name="Est. Secondary Meal",
                 marker=dict(
@@ -301,106 +373,67 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                 row=1, col=1
             )
 
-    # Add matched meal annotations
+    # Add glucose rise annotations from matches with clean/composite classification
     if matches:
         for match in matches:
-            event_time = match.event_time
-            event_time_ms = int(event_time.timestamp() * 1000)
-            meal_time_ms = int(match.meal_time.timestamp() * 1000)
+            event_time_ms = int(match.event_time.timestamp() * 1000)
 
-            time_diffs = abs(df["datetime_ist"] - event_time)
-            closest_idx = time_diffs.idxmin()
-            glucose_at_event = df.loc[closest_idx, "smoothed"]
-
-            if match.composite_score >= 0.85:
-                match_color = "#2ECC71"
-            elif match.composite_score >= 0.75:
-                match_color = "#F39C12"
+            # Determine event classification styling
+            if match.is_clean_event:
+                event_label = "Clean"
+                event_border_color = "#2ECC71"  # Green for clean
             else:
-                match_color = "#E74C3C"
+                event_label = "Composite"
+                event_border_color = "#9B59B6"  # Purple for composite
 
-            if match.event_type == "MEAL_START":
-                event_type_display = "Est. Meal"
-            elif match.event_type == "SECONDARY_MEAL":
-                event_type_display = "Est. Sec. Meal"
-            else:
-                event_type_display = match.event_type
+            if match.glucose_rise is not None and match.glucose_at_start is not None and match.glucose_at_peak is not None:
+                # Add shaded region between start and peak
+                if match.peak_time:
+                    peak_time_ms = int(match.peak_time.timestamp() * 1000)
 
-            fig.add_trace(
-                go.Scatter(
-                    x=[event_time],
-                    y=[glucose_at_event],
-                    mode="markers",
-                    name=f"Matched: {match.meal_slot}",
-                    marker=dict(
-                        size=16,
-                        color=match_color,
-                        symbol="star",
-                        line=dict(color="white", width=2)
-                    ),
-                    hovertemplate=(
-                        f"<b>MATCHED EVENT</b><br>"
-                        f"<b>Meal Slot:</b> {match.meal_slot}<br>"
-                        f"<b>Meal Name:</b> {match.meal_name[:25]}{'...' if len(match.meal_name) > 25 else ''}<br>"
-                        f"<b>Event Time:</b> {match.event_time.strftime('%H:%M')}<br>"
-                        f"<b>Event Type:</b> {event_type_display}<br>"
-                        f"<b>---Scoring---</b><br>"
-                        f"<b>Carbs:</b> {match.carbs:.1f}g<br>"
-                        f"<b>Carbs/Rise Score:</b> {match.s_size:.2f}<br>"
-                        f"<b>Match Score:</b> {match.composite_score:.1%}<br>"
-                        f"<extra></extra>"
-                    ),
-                    showlegend=False
-                ),
-                row=1, col=1
-            )
+                    # Add annotation showing the rise amount and classification
+                    rise_color = "#E74C3C" if match.glucose_rise > 50 else "#F39C12" if match.glucose_rise > 30 else "#27AE60"
 
-            fig.add_annotation(
-                x=event_time_ms,
-                y=glucose_at_event - 15,
-                text=f"{match.meal_slot}<br>{match.composite_score:.0%}",
-                showarrow=True,
-                arrowhead=2,
-                arrowcolor=match_color,
-                font=dict(size=9, color=match_color, weight="bold"),
-                bgcolor="rgba(255,255,255,0.8)",
-                bordercolor=match_color,
-                borderwidth=1,
-                row=1, col=1
-            )
+                    # Build annotation text
+                    annotation_text = f"↑{match.glucose_rise:.0f}"
+                    if match.time_to_peak_minutes is not None:
+                        annotation_text += f" ({match.time_to_peak_minutes:.0f}m)"
 
-            meal_time_diffs = abs(df["datetime_ist"] - match.meal_time)
-            meal_closest_idx = meal_time_diffs.idxmin()
-            glucose_at_meal = df.loc[meal_closest_idx, "smoothed"]
+                    fig.add_annotation(
+                        x=peak_time_ms,
+                        y=match.glucose_at_peak + 5,
+                        text=annotation_text,
+                        showarrow=False,
+                        font=dict(size=10, color=rise_color, weight="bold"),
+                        bgcolor="rgba(255,255,255,0.8)",
+                        row=1, col=1
+                    )
 
-            fig.add_trace(
-                go.Scatter(
-                    x=[match.meal_time, event_time],
-                    y=[glucose_at_meal, glucose_at_event],
-                    mode="lines",
-                    line=dict(color=match_color, width=2, dash="dash"),
-                    showlegend=False,
-                    hoverinfo="skip"
-                ),
-                row=1, col=1
-            )
+                    # Add classification label at event start
+                    fig.add_annotation(
+                        x=event_time_ms,
+                        y=match.glucose_at_start - 8,
+                        text=event_label,
+                        showarrow=False,
+                        font=dict(size=8, color=event_border_color),
+                        bgcolor="rgba(255,255,255,0.7)",
+                        bordercolor=event_border_color,
+                        borderwidth=1,
+                        row=1, col=1
+                    )
 
-            fig.add_trace(
-                go.Scatter(
-                    x=[match.meal_time],
-                    y=[glucose_at_meal],
-                    mode="markers",
-                    marker=dict(
-                        size=10,
-                        color=match_color,
-                        symbol="circle",
-                        line=dict(color="white", width=1)
-                    ),
-                    hoverinfo="skip",
-                    showlegend=False
-                ),
-                row=1, col=1
-            )
+            # For composite events, show delta G to next event if available
+            if match.delta_g_to_next_event is not None and not match.is_clean_event:
+                # Find approximate position for next event annotation
+                fig.add_annotation(
+                    x=event_time_ms,
+                    y=match.glucose_at_start + (match.delta_g_to_next_event / 2) if match.glucose_at_start else 100,
+                    text=f"→+{match.delta_g_to_next_event:.0f}",
+                    showarrow=False,
+                    font=dict(size=8, color="#9B59B6"),
+                    bgcolor="rgba(255,255,255,0.6)",
+                    row=1, col=1
+                )
 
     # Update layout
     fig.update_layout(

@@ -1,400 +1,365 @@
 """
 Meal-to-CGM event matching algorithms.
+
+Simplified approach:
+1. Collect all meal events (MEAL_START and SECONDARY_MEAL) as a flat list
+2. For each event, calculate ΔG to the next event (or peak)
+3. Match meals to events using:
+   - Slot ordering (Pre-breakfast < Breakfast < Lunch, etc.)
+   - Carbs ranking ↔ ΔG ranking within overlapping time windows
 """
 
 import pandas as pd
-from datetime import datetime
-from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, Tuple
 
 from .models import MealEvent, CompositeMealEvent, MealMatch, SimplifiedThresholds
 from .scoring import (
     MEAL_SLOT_WINDOWS, MIN_MATCH_THRESHOLD,
-    calculate_glycemic_load_proxy, compute_relative_carbs_rise_score,
-    validate_carbs_rise_match, get_slot_priority
+    get_slot_priority, get_slot_temporal_index
 )
-from .detection import (
-    detect_secondary_meal_events, detect_composite_events, find_associated_peak
-)
+from .detection import detect_secondary_meal_events
 
 
-def calculate_expected_glucose_rise(total_carbs: float, total_fiber: float,
-                                     total_protein: float, total_fat: float) -> float:
+def get_glucose_at_time(cgm_df: pd.DataFrame, target_time: datetime) -> Optional[float]:
+    """Get glucose value at or near a specific time."""
+    if cgm_df is None or len(cgm_df) == 0:
+        return None
+
+    df = cgm_df.sort_values("datetime_ist")
+
+    # Find closest reading
+    time_diffs = abs((df["datetime_ist"] - target_time).dt.total_seconds())
+    closest_idx = time_diffs.idxmin()
+
+    # Only use if within 10 minutes
+    if time_diffs[closest_idx] <= 600:
+        return df.loc[closest_idx, "value"]
+    return None
+
+
+def calculate_peak_offset_penalty(time_to_peak_minutes: float) -> float:
     """
-    Calculate expected glucose rise based on combined meal nutrients.
+    Calculate a penalty for events where the peak is too far from the event.
 
-    Uses the Glycemic Load Proxy to estimate expected glucose rise.
-    A rough approximation: GL_proxy of 30 ~ 50 mg/dL rise for typical person.
-
-    Args:
-        total_carbs, total_fiber, total_protein, total_fat: Combined nutrients
-
-    Returns:
-        Expected glucose rise in mg/dL
+    - 0-120 min: No penalty (1.0)
+    - 120-300 min: Gradual penalty (1.0 → 0.3)
+    - >300 min: Severe penalty (0.3)
     """
-    gl_proxy = calculate_glycemic_load_proxy(total_carbs, total_fiber, total_protein, total_fat)
-    expected_rise = 20 + (gl_proxy * 1.5)
-    return min(expected_rise, 150)
+    if time_to_peak_minutes is None:
+        return 0.7
 
+    if time_to_peak_minutes <= 120:
+        return 1.0
 
-def validate_composite_match(composite: CompositeMealEvent, matched_meals: List[dict]) -> dict:
-    """
-    Validate if the combined glycemic load of matched meals explains the glucose rise.
-
-    Args:
-        composite: The composite meal event
-        matched_meals: List of meal data dicts matched to this composite
-
-    Returns:
-        dict with validation results
-    """
-    if not matched_meals:
-        return {
-            "is_valid": False,
-            "combined_gl_proxy": 0,
-            "expected_rise": 0,
-            "actual_rise": composite.total_glucose_rise,
-            "confidence": 0.0
-        }
-
-    total_carbs = sum(m.get("carbohydrates", 0) or 0 for m in matched_meals)
-    total_fiber = sum(m.get("fibre", 0) or 0 for m in matched_meals)
-    total_protein = sum(m.get("protein", 0) or 0 for m in matched_meals)
-    total_fat = sum(m.get("fat", 0) or 0 for m in matched_meals)
-
-    combined_gl_proxy = calculate_glycemic_load_proxy(total_carbs, total_fiber, total_protein, total_fat)
-    expected_rise = calculate_expected_glucose_rise(total_carbs, total_fiber, total_protein, total_fat)
-
-    actual_rise = composite.total_glucose_rise
-
-    if actual_rise is None:
-        confidence = 0.5
-        is_valid = True
-    else:
-        error_ratio = abs(actual_rise - expected_rise) / max(expected_rise, 20)
-
-        if error_ratio <= 0.3:
-            confidence = 1.0 - error_ratio
-            is_valid = True
-        elif error_ratio <= 0.5:
-            confidence = 0.7 - (error_ratio - 0.3)
-            is_valid = True
-        else:
-            confidence = max(0.3, 0.5 - (error_ratio - 0.5) * 0.5)
-            is_valid = False
-
-    return {
-        "is_valid": is_valid,
-        "combined_gl_proxy": combined_gl_proxy,
-        "expected_rise": expected_rise,
-        "actual_rise": actual_rise,
-        "confidence": confidence
-    }
-
-
-def resolve_nearby_events(primary_events: List[MealEvent], secondary_events: List[MealEvent],
-                          meal_time: datetime, proximity_minutes: float = 45) -> List[MealEvent]:
-    """
-    Resolve conflicts between primary and secondary meals that are close together.
-
-    If a primary and secondary meal are within proximity_minutes of each other,
-    return only the one closer to the logged meal time.
-    """
-    all_events = primary_events + secondary_events
-
-    if len(all_events) <= 1:
-        return all_events
-
-    all_events_sorted = sorted(all_events, key=lambda e: e.estimated_meal_time or e.detected_at)
-
-    resolved = []
-    skip_indices = set()
-
-    for i, event in enumerate(all_events_sorted):
-        if i in skip_indices:
-            continue
-
-        event_time = event.estimated_meal_time or event.detected_at
-
-        nearby_different_type = []
-        for j, other_event in enumerate(all_events_sorted):
-            if i == j or j in skip_indices:
-                continue
-
-            other_time = other_event.estimated_meal_time or other_event.detected_at
-            time_diff = abs((event_time - other_time).total_seconds() / 60)
-
-            if time_diff <= proximity_minutes and event.event_type != other_event.event_type:
-                nearby_different_type.append((j, other_event, time_diff))
-
-        if nearby_different_type:
-            candidates = [(i, event)] + [(j, e) for j, e, _ in nearby_different_type]
-
-            best_idx, best_event = min(
-                candidates,
-                key=lambda x: abs((meal_time - (x[1].estimated_meal_time or x[1].detected_at)).total_seconds())
-            )
-
-            resolved.append(best_event)
-
-            for idx, _, _ in nearby_different_type:
-                skip_indices.add(idx)
-            skip_indices.add(i)
-        else:
-            resolved.append(event)
-
-    return resolved
+    excess_minutes = time_to_peak_minutes - 120
+    penalty = max(0.3, 1.0 - (excess_minutes / 30) * 0.1)
+    return penalty
 
 
 def match_meals_to_events(meals_df: pd.DataFrame, events: List[MealEvent],
                           cgm_df: pd.DataFrame = None,
-                          thresholds: SimplifiedThresholds = None) -> tuple:
+                          thresholds: SimplifiedThresholds = None,
+                          debug: bool = False) -> tuple:
     """
-    Match logged meals to detected CGM events using slot-group-aware matching.
+    Match logged meals to detected CGM events using simplified segment-based matching.
 
-    This algorithm:
-    1. Detects composite events (grouping MEAL_START + SECONDARY_MEALs without intervening peaks)
-    2. Processes overlapping slot groups together for better matching in ambiguous time windows
-    3. Uses glucose rise magnitude to differentiate meals within slots
-    4. For composite events, uses linear interpolation to attribute rise to individual meals
-    5. Validates GL proxy against actual rise - leaves unmatched if significantly mismatched
-    6. Maintains flexibility through composite scoring while using slot priority as tiebreaker
+    Algorithm:
+    1. Collect all meal events (MEAL_START + SECONDARY_MEAL) sorted by time
+    2. Find peaks to determine event boundaries
+    3. Calculate ΔG for each segment (event → next event or peak)
+    4. Match meals to events using:
+       - Slot temporal ordering (earlier slots → earlier events)
+       - Carbs ↔ ΔG ranking (high carb meals → high ΔG events)
 
     Args:
-        meals_df: DataFrame with meal data (must have datetime_ist, meal_name, etc.)
-        events: List of detected MealEvent objects (from detect_meal_events_simplified)
-        cgm_df: CGM DataFrame for detecting secondary meals and composite events
+        meals_df: DataFrame with meal data
+        events: List of detected MealEvent objects
+        cgm_df: CGM DataFrame for glucose lookups
         thresholds: Detection thresholds
+        debug: Print debug information
 
     Returns:
-        Tuple of (list of MealMatch objects, list of unmatched composite indices,
-                  list of composite events, validation results)
+        Tuple of (matches, unmatched_event_indices, all_events_as_composites, validation_results)
     """
     if len(meals_df) == 0 or len(events) == 0:
         return [], [], [], {}
 
-    # Detect secondary meal events if CGM data is provided
-    secondary_events = []
+    # === STEP 1: Collect all meal events ===
+    # Get events from the passed list
+    meal_events = [e for e in events if e.event_type in ("MEAL_START", "SECONDARY_MEAL")]
+    peak_events = [e for e in events if e.event_type == "PEAK"]
+
+    # Also detect secondary meals fresh (in case some were merged)
     if cgm_df is not None and thresholds is not None:
-        secondary_events = detect_secondary_meal_events(cgm_df, thresholds)
+        fresh_secondary = detect_secondary_meal_events(cgm_df, thresholds)
+        existing_times = {e.detected_at for e in meal_events}
+        for sec in fresh_secondary:
+            if sec.detected_at not in existing_times:
+                meal_events.append(sec)
 
-    # Add secondary events to the full events list for composite detection
-    all_events = events + secondary_events
+    # Sort all meal events by time
+    meal_events = sorted(meal_events, key=lambda e: e.detected_at)
+    peak_events = sorted(peak_events, key=lambda e: e.detected_at)
 
-    # Detect composite events
-    if cgm_df is not None:
-        composite_events = detect_composite_events(all_events, cgm_df)
-    else:
-        # Fallback: create simple composites from MEAL_START events
-        composite_events = []
-        for i, event in enumerate(e for e in events if e.event_type == "MEAL_START"):
-            peak_time = find_associated_peak(event, events)
-            composite_events.append(CompositeMealEvent(
-                event_id=f"CE_{i+1}",
-                start_time=event.estimated_meal_time or event.detected_at,
-                end_time=event.detected_at,
-                peak_time=peak_time,
-                primary_event=event,
-                secondary_events=[],
-                glucose_at_start=event.glucose_at_detection,
-                glucose_at_peak=None,
-                total_glucose_rise=None,
-                is_stacked=False
-            ))
+    if debug:
+        print(f"[DEBUG] Meal events: {len(meal_events)}")
+        for e in meal_events:
+            print(f"  - {e.detected_at.strftime('%H:%M')} ({e.event_type}) glucose={e.glucose_at_detection:.1f}")
+        print(f"[DEBUG] Peak events: {len(peak_events)}")
+        for p in peak_events:
+            print(f"  - {p.detected_at.strftime('%H:%M')} glucose={p.glucose_at_detection:.1f}")
 
-    if len(composite_events) == 0:
+    if len(meal_events) == 0:
         return [], [], [], {}
 
-    # Determine the primary date
+    # === STEP 2: Calculate ΔG segments ===
+    # For each meal event, find the next event (meal or peak) and calculate ΔG
+    event_segments = []
+
+    for i, event in enumerate(meal_events):
+        event_time = event.estimated_meal_time or event.detected_at
+        event_glucose = event.glucose_at_detection
+
+        # Find next meal event (if any)
+        next_meal = meal_events[i + 1] if i + 1 < len(meal_events) else None
+
+        # Find next peak after this event
+        next_peak = None
+        for peak in peak_events:
+            if peak.detected_at > event.detected_at:
+                next_peak = peak
+                break
+
+        # Determine the "end point" for this segment
+        # It's either the next meal event or the peak, whichever comes first
+        segment_end = None
+        segment_end_glucose = None
+        segment_type = "unknown"
+
+        if next_meal and next_peak:
+            if next_meal.detected_at < next_peak.detected_at:
+                # Next meal comes before peak
+                segment_end = next_meal.detected_at
+                segment_end_glucose = next_meal.glucose_at_detection
+                segment_type = "to_next_meal"
+            else:
+                # Peak comes before next meal
+                segment_end = next_peak.detected_at
+                segment_end_glucose = next_peak.glucose_at_detection
+                segment_type = "to_peak"
+        elif next_peak:
+            segment_end = next_peak.detected_at
+            segment_end_glucose = next_peak.glucose_at_detection
+            segment_type = "to_peak"
+        elif next_meal:
+            segment_end = next_meal.detected_at
+            segment_end_glucose = next_meal.glucose_at_detection
+            segment_type = "to_next_meal"
+
+        # Calculate ΔG for this segment
+        if segment_end_glucose is not None and event_glucose is not None:
+            delta_g = segment_end_glucose - event_glucose
+        else:
+            delta_g = 0
+
+        # Calculate time to peak (for peak offset penalty)
+        time_to_peak = None
+        if next_peak:
+            time_to_peak = (next_peak.detected_at - event.detected_at).total_seconds() / 60
+
+        event_segments.append({
+            "event": event,
+            "event_time": event_time,
+            "event_glucose": event_glucose,
+            "segment_end": segment_end,
+            "segment_end_glucose": segment_end_glucose,
+            "segment_type": segment_type,
+            "delta_g": delta_g,
+            "next_peak": next_peak,
+            "time_to_peak": time_to_peak
+        })
+
+    if debug:
+        print(f"[DEBUG] Event segments:")
+        for seg in event_segments:
+            print(f"  - {seg['event_time'].strftime('%H:%M')}: ΔG={seg['delta_g']:.1f} ({seg['segment_type']}), "
+                  f"T→Peak={seg['time_to_peak']:.0f}min" if seg['time_to_peak'] else "no peak")
+
+    # === STEP 3: Prepare meals for matching ===
     primary_date = meals_df["date"].mode().iloc[0] if len(meals_df) > 0 else None
 
-    # Group meals and events by slot window
-    slot_groups = {}
-
+    meal_list = []
     for meal_idx, meal_row in meals_df.iterrows():
         carbs = meal_row.get("carbohydrates", 0) or 0
         meal_slot = meal_row.get("meal_slot", "Unknown")
-        slot_window = MEAL_SLOT_WINDOWS.get(meal_slot, (0, 24))
+        slot_temporal_idx = get_slot_temporal_index(meal_slot)
 
-        if meal_slot not in slot_groups:
-            slot_groups[meal_slot] = {"meals": [], "events": [], "slot_window": slot_window}
-
-        slot_groups[meal_slot]["meals"].append({
+        meal_list.append({
             "meal_idx": meal_idx,
             "meal_row": meal_row,
             "carbs": carbs,
-            "meal_slot": meal_slot
+            "meal_slot": meal_slot,
+            "slot_temporal_idx": slot_temporal_idx,
+            "logged_time": meal_row["datetime_ist"]
         })
 
-    # Collect events for each slot
-    for comp_idx, composite in enumerate(composite_events):
-        event_time = composite.start_time
-        event_date = event_time.date() if hasattr(event_time, 'date') else event_time.to_pydatetime().date()
-        is_next_day = primary_date is not None and event_date > primary_date
+    # Sort meals by slot temporal order, then by logged time
+    meal_list = sorted(meal_list, key=lambda m: (m["slot_temporal_idx"], m["logged_time"]))
 
-        event_hour = event_time.hour + event_time.minute / 60.0
-        if is_next_day and event_hour < 6:
-            event_hour += 24
+    if debug:
+        print(f"[DEBUG] Meals sorted by slot order:")
+        for m in meal_list:
+            print(f"  - {m['meal_slot']} ({m['slot_temporal_idx']}): {m['carbs']:.0f}g carbs, "
+                  f"logged {m['logged_time'].strftime('%H:%M')}")
 
-        attributed_rise = composite.total_glucose_rise
-        if attributed_rise is None or attributed_rise <= 0:
-            if composite.glucose_at_peak and composite.glucose_at_start:
-                attributed_rise = composite.glucose_at_peak - composite.glucose_at_start
-            else:
-                attributed_rise = 0
+    # === STEP 4: Match meals to events ===
+    # Strategy:
+    # 1. Group meals by slot
+    # 2. For each slot, find events in the slot's time window
+    # 3. Match by carbs ranking ↔ ΔG ranking
+    # 4. Apply peak offset penalty
 
-        for meal_slot, group in slot_groups.items():
-            slot_start, slot_end = group["slot_window"]
-            if slot_start <= event_hour < slot_end:
-                group["events"].append({
-                    "comp_idx": comp_idx,
-                    "composite": composite,
-                    "attributed_rise": attributed_rise,
-                    "event_time": event_time
-                })
-
-    # Compute scores using relative ranking within each slot
-    scores = []
-
-    for meal_slot, group in slot_groups.items():
-        meals = group["meals"]
-        events_in_slot = group["events"]
-
-        if not meals or not events_in_slot:
-            continue
-
-        meals_sorted = sorted(meals, key=lambda m: m["carbs"], reverse=True)
-        meal_carbs_rank = {m["meal_idx"]: rank for rank, m in enumerate(meals_sorted)}
-
-        events_sorted = sorted(events_in_slot, key=lambda e: e["attributed_rise"], reverse=True)
-        event_rise_rank = {e["comp_idx"]: rank for rank, e in enumerate(events_sorted)}
-
-        total_meals = len(meals)
-        total_events = len(events_in_slot)
-
-        for meal_info in meals:
-            meal_idx = meal_info["meal_idx"]
-            carbs = meal_info["carbs"]
-            m_rank = meal_carbs_rank[meal_idx]
-
-            slot_priority = get_slot_priority(meal_slot)
-
-            for event_info in events_in_slot:
-                comp_idx = event_info["comp_idx"]
-                composite = event_info["composite"]
-                attributed_rise = event_info["attributed_rise"]
-                e_rank = event_rise_rank[comp_idx]
-
-                carbs_rise_score = compute_relative_carbs_rise_score(
-                    carbs, m_rank, total_meals,
-                    attributed_rise, e_rank, total_events
-                )
-
-                composite_score = carbs_rise_score
-
-                scores.append({
-                    "meal_idx": meal_idx,
-                    "comp_idx": comp_idx,
-                    "meal_row": meal_info["meal_row"],
-                    "composite": composite,
-                    "carbs_rise_score": carbs_rise_score,
-                    "composite_score": composite_score,
-                    "is_stacked": composite.is_stacked,
-                    "slot_priority": slot_priority,
-                    "attributed_rise": attributed_rise,
-                    "carbs": carbs
-                })
-
-    scores.sort(key=lambda x: (x["composite_score"], -x["slot_priority"]), reverse=True)
-
-    # Greedy assignment with carbs/rise validation
-    assigned_meals = set()
-    assigned_composites_for_clean = set()
-    composite_meal_assignments = {}
     matches = []
-    unmatched_due_to_carbs_mismatch = []
+    assigned_meals = set()
+    assigned_events = set()
 
-    for score_entry in scores:
-        meal_idx = score_entry["meal_idx"]
-        comp_idx = score_entry["comp_idx"]
+    # Get slot windows
+    slot_windows = {}
+    for meal in meal_list:
+        slot = meal["meal_slot"]
+        if slot not in slot_windows:
+            slot_windows[slot] = MEAL_SLOT_WINDOWS.get(slot, (0, 24))
 
-        if meal_idx in assigned_meals:
+    # Process slots in temporal order
+    slots_in_order = sorted(slot_windows.keys(), key=lambda s: get_slot_temporal_index(s))
+
+    for slot in slots_in_order:
+        slot_start, slot_end = slot_windows[slot]
+
+        # Get unassigned meals in this slot
+        slot_meals = [m for m in meal_list
+                      if m["meal_slot"] == slot and m["meal_idx"] not in assigned_meals]
+
+        if not slot_meals:
             continue
 
-        composite = score_entry["composite"]
-
-        threshold = MIN_MATCH_THRESHOLD if not composite.is_stacked else MIN_MATCH_THRESHOLD - 0.1
-
-        if score_entry["composite_score"] < threshold:
-            continue
-
-        if not composite.is_stacked and comp_idx in assigned_composites_for_clean:
-            continue
-
-        actual_rise = score_entry.get("attributed_rise")
-        carbs = score_entry["carbs"]
-
-        if actual_rise is not None:
-            if not validate_carbs_rise_match(carbs, actual_rise):
-                unmatched_due_to_carbs_mismatch.append({
-                    "meal_idx": meal_idx,
-                    "meal_name": score_entry["meal_row"].get("meal_name", "Unknown"),
-                    "carbs": carbs,
-                    "actual_rise": actual_rise,
-                    "reason": "Extreme carbs/rise mismatch"
-                })
+        # Get unassigned events in this slot's time window
+        slot_events = []
+        for i, seg in enumerate(event_segments):
+            if i in assigned_events:
                 continue
 
-        meal_row = score_entry["meal_row"]
-        event_time = composite.start_time
-        logged_meal_time = meal_row["datetime_ist"]  # When user logged the meal
+            event_time = seg["event_time"]
+            event_hour = event_time.hour + event_time.minute / 60.0
 
-        matched_event_type = composite.primary_event.event_type
+            # Handle next-day events
+            event_date = event_time.date() if hasattr(event_time, 'date') else event_time.to_pydatetime().date()
+            is_next_day = primary_date is not None and event_date > primary_date
+            if is_next_day and event_hour < 6:
+                event_hour += 24
 
-        # Calculate time offset: logged_meal_time - event_time (positive = logged after event)
-        time_offset = (logged_meal_time - event_time).total_seconds() / 60
+            if slot_start <= event_hour < slot_end:
+                slot_events.append((i, seg))
 
-        match = MealMatch(
-            meal_name=meal_row.get("meal_name", "Unknown"),
-            meal_time=logged_meal_time,  # User's logged meal time
-            meal_slot=meal_row.get("meal_slot", "Unknown"),
-            event_type=matched_event_type,
-            event_time=event_time,  # CGM detected event time
-            peak_time=composite.peak_time,
-            time_offset_minutes=time_offset,
-            s_time=0.5,
-            s_slot=0.5,
-            s_physio=0.5,
-            s_size=score_entry["carbs_rise_score"],
-            composite_score=score_entry["composite_score"],
-            carbs=meal_row.get("carbohydrates", 0) or 0,
-            protein=meal_row.get("protein", 0) or 0,
-            fat=meal_row.get("fat", 0) or 0,
-            fiber=meal_row.get("fibre", 0) or 0,
-            composite_event_id=composite.event_id,
-            is_stacked_meal=composite.is_stacked
+        if not slot_events:
+            continue
+
+        if debug:
+            print(f"[DEBUG] Matching slot '{slot}': {len(slot_meals)} meals, {len(slot_events)} events")
+
+        # Sort meals by carbs (descending)
+        slot_meals_sorted = sorted(slot_meals, key=lambda m: m["carbs"], reverse=True)
+
+        # Sort events by ΔG (descending), with peak offset penalty
+        def event_score(item):
+            idx, seg = item
+            delta_g = seg["delta_g"]
+            peak_penalty = calculate_peak_offset_penalty(seg["time_to_peak"])
+            return delta_g * peak_penalty
+
+        slot_events_sorted = sorted(slot_events, key=event_score, reverse=True)
+
+        # Match in order: highest carbs → highest ΔG
+        for meal in slot_meals_sorted:
+            if not slot_events_sorted:
+                break
+
+            # Take the best available event
+            event_idx, seg = slot_events_sorted.pop(0)
+
+            event = seg["event"]
+            event_time = seg["event_time"]
+            delta_g = seg["delta_g"]
+            next_peak = seg["next_peak"]
+            time_to_peak = seg["time_to_peak"]
+
+            meal_row = meal["meal_row"]
+            logged_time = meal["logged_time"]
+
+            # Calculate time offset
+            time_offset = (logged_time - event_time).total_seconds() / 60
+
+            # Create match
+            match = MealMatch(
+                meal_name=meal_row.get("meal_name", "Unknown"),
+                meal_time=logged_time,
+                meal_slot=meal["meal_slot"],
+                event_type=event.event_type,
+                event_time=event_time,
+                peak_time=next_peak.detected_at if next_peak else None,
+                time_offset_minutes=time_offset,
+                s_time=0.5,
+                s_slot=0.5,
+                s_physio=0.5,
+                s_size=0.5,
+                composite_score=calculate_peak_offset_penalty(time_to_peak),
+                carbs=meal["carbs"],
+                protein=meal_row.get("protein", 0) or 0,
+                fat=meal_row.get("fat", 0) or 0,
+                fiber=meal_row.get("fibre", 0) or 0,
+                composite_event_id=f"E_{event_idx}",
+                is_stacked_meal=False,
+                glucose_at_start=seg["event_glucose"],
+                glucose_at_peak=next_peak.glucose_at_detection if next_peak else None,
+                glucose_rise=delta_g,
+                is_clean_event=(seg["segment_type"] == "to_peak"),
+                time_to_peak_minutes=time_to_peak,
+                delta_g_to_next_event=delta_g if seg["segment_type"] == "to_next_meal" else None
+            )
+
+            matches.append(match)
+            assigned_meals.add(meal["meal_idx"])
+            assigned_events.add(event_idx)
+
+            if debug:
+                print(f"  Matched: {meal['meal_slot']} {meal['carbs']:.0f}g → "
+                      f"{event_time.strftime('%H:%M')} (ΔG={delta_g:.1f})")
+
+    # Create dummy composite events for compatibility with existing code
+    composite_events = []
+    for i, seg in enumerate(event_segments):
+        event = seg["event"]
+        next_peak = seg["next_peak"]
+
+        composite = CompositeMealEvent(
+            event_id=f"E_{i}",
+            start_time=seg["event_time"],
+            end_time=seg["event_time"],
+            peak_time=next_peak.detected_at if next_peak else None,
+            primary_event=event,
+            secondary_events=[],
+            glucose_at_start=seg["event_glucose"],
+            glucose_at_peak=next_peak.glucose_at_detection if next_peak else None,
+            total_glucose_rise=seg["delta_g"],
+            is_stacked=False,
+            is_clean=(seg["segment_type"] == "to_peak"),
+            time_to_peak_minutes=seg["time_to_peak"],
+            delta_g_to_next_event=seg["delta_g"] if seg["segment_type"] == "to_next_meal" else None,
+            next_event_time=seg["segment_end"]
         )
+        composite_events.append(composite)
 
-        matches.append(match)
-        assigned_meals.add(meal_idx)
+    unmatched_indices = [i for i in range(len(event_segments)) if i not in assigned_events]
 
-        if comp_idx not in composite_meal_assignments:
-            composite_meal_assignments[comp_idx] = []
-        composite_meal_assignments[comp_idx].append(meal_row.to_dict())
-
-        if not composite.is_stacked:
-            assigned_composites_for_clean.add(comp_idx)
-
-    # Validate composite matches
-    validation_results = {}
-    for comp_idx, meal_dicts in composite_meal_assignments.items():
-        composite = composite_events[comp_idx]
-        if composite.is_stacked:
-            validation = validate_composite_match(composite, meal_dicts)
-            validation_results[composite.event_id] = validation
-
-    if unmatched_due_to_carbs_mismatch:
-        validation_results["_carbs_rise_mismatches"] = unmatched_due_to_carbs_mismatch
-
-    unmatched_composite_indices = [i for i in range(len(composite_events)) if i not in composite_meal_assignments]
-
-    return matches, unmatched_composite_indices, composite_events, validation_results
+    return matches, unmatched_indices, composite_events, {}

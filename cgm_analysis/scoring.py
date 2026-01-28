@@ -62,6 +62,25 @@ OVERLAPPING_SLOT_GROUPS = [
 SLOT_PRIORITY = {slot: idx for group in OVERLAPPING_SLOT_GROUPS
                  for idx, slot in enumerate(group["priority_order"])}
 
+# Temporal ordering of meal slots (earlier slots must match earlier events)
+# This defines the natural order of meals throughout the day
+SLOT_TEMPORAL_ORDER = [
+    "Pre Breakfast",
+    "Breakfast",
+    "Morning Snack",
+    "Mid Morning Snack",
+    "Lunch",
+    "Early Afternoon Snack",
+    "Post Lunch Snack",
+    "Afternoon Snack",
+    "Evening Snack",
+    "Dinner",
+    "Late Night Snack",
+]
+
+# Create mapping from slot name to temporal index
+SLOT_TEMPORAL_INDEX = {slot: idx for idx, slot in enumerate(SLOT_TEMPORAL_ORDER)}
+
 # GL proxy validation tolerance (50% = actual can be 50%-150% of expected)
 GL_PROXY_TOLERANCE = 0.5
 
@@ -453,3 +472,12 @@ def get_slot_priority(meal_slot: str) -> int:
     Lower number = higher priority.
     """
     return SLOT_PRIORITY.get(meal_slot, 99)
+
+
+def get_slot_temporal_index(meal_slot: str) -> int:
+    """
+    Get the temporal index of a meal slot.
+    Lower index = earlier in the day.
+    Used to enforce that meals in earlier slots must match earlier events.
+    """
+    return SLOT_TEMPORAL_INDEX.get(meal_slot, 99)

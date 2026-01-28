@@ -67,9 +67,6 @@ from .detection import (
 )
 
 from .matching import (
-    calculate_expected_glucose_rise,
-    validate_composite_match,
-    resolve_nearby_events,
     match_meals_to_events
 )
 

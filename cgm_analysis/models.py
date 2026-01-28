@@ -32,6 +32,10 @@ class CompositeMealEvent:
     - We CAN validate the combined glycemic load against total glucose rise
 
     Multiple logged meals can be matched to a single composite event.
+
+    Classification:
+    - CLEAN: Has a well-defined peak within 180 minutes with no intervening events
+    - COMPOSITE: Has other events between the meal event and peak
     """
     event_id: str  # Unique identifier for this composite event
     start_time: datetime  # Time of the initial MEAL_START event
@@ -43,6 +47,11 @@ class CompositeMealEvent:
     glucose_at_peak: Optional[float]  # Glucose level at the peak
     total_glucose_rise: Optional[float]  # peak - start glucose (if peak found)
     is_stacked: bool  # True if there are secondary events (stacked meals)
+    # New fields for clean/composite classification
+    is_clean: bool = False  # True if clean event (no intervening events, peak within 180 min)
+    time_to_peak_minutes: Optional[float] = None  # Minutes from start to peak
+    delta_g_to_next_event: Optional[float] = None  # Glucose change to next event (for composite)
+    next_event_time: Optional[datetime] = None  # Time of next event (for composite)
 
 
 @dataclass
@@ -68,6 +77,14 @@ class MealMatch:
     # Composite event reference (if matched to a composite)
     composite_event_id: Optional[str] = None
     is_stacked_meal: bool = False
+    # Glucose change data
+    glucose_at_start: Optional[float] = None
+    glucose_at_peak: Optional[float] = None
+    glucose_rise: Optional[float] = None
+    # Clean/Composite classification
+    is_clean_event: bool = False  # True if clean (no intervening events, peak within 180 min)
+    time_to_peak_minutes: Optional[float] = None  # Minutes from event to peak
+    delta_g_to_next_event: Optional[float] = None  # For composite: glucose change to next event
 
 
 @dataclass
@@ -77,3 +94,8 @@ class SimplifiedThresholds:
     min_derivative_magnitude: float = 0.01  # Minimum |dG/dt| to consider a crossing significant
     start_hour: int = 7  # Only detect events after this hour (24h format)
     meal_absorption_lag: int = 0  # minutes - time from eating to detectable rise
+    secondary_meal_dg_dt_threshold: float = -0.1  # Minimum dG/dt for secondary meal detection (can be negative)
+    event_merge_gap_minutes: int = 30  # Merge meal events within this many minutes
+    # Peak detection parameters (scipy find_peaks)
+    peak_prominence: float = 5.0  # Minimum prominence for peak detection (mg/dL)
+    peak_distance: int = 1  # Minimum samples between peaks
