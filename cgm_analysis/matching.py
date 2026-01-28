@@ -115,6 +115,8 @@ def match_meals_to_events(meals_df: pd.DataFrame, events: List[MealEvent],
 
     # === STEP 2: Calculate ΔG segments ===
     # For each meal event, find the next event (meal or peak) and calculate ΔG
+    # Events within merge_gap are considered merged (clean), not composite
+    merge_gap_minutes = thresholds.event_merge_gap_minutes if thresholds else 30
     event_segments = []
 
     for i, event in enumerate(meal_events):
@@ -131,8 +133,26 @@ def match_meals_to_events(meals_df: pd.DataFrame, events: List[MealEvent],
                 next_peak = peak
                 break
 
+        # Check if this event is merged with previous or next event
+        # An event is "merged" if it's within merge_gap of an adjacent event
+        is_merged_with_next = False
+        is_merged_with_prev = False
+
+        if next_meal:
+            time_to_next_meal = (next_meal.detected_at - event.detected_at).total_seconds() / 60
+            is_merged_with_next = time_to_next_meal <= merge_gap_minutes
+
+        prev_meal = meal_events[i - 1] if i > 0 else None
+        if prev_meal:
+            time_from_prev_meal = (event.detected_at - prev_meal.detected_at).total_seconds() / 60
+            is_merged_with_prev = time_from_prev_meal <= merge_gap_minutes
+
+        # Event is part of a merge group if merged with either neighbor
+        is_part_of_merge_group = is_merged_with_next or is_merged_with_prev
+
         # Determine the "end point" for this segment
         # It's either the next meal event or the peak, whichever comes first
+        # Merged meals are treated as going to peak (clean)
         segment_end = None
         segment_end_glucose = None
         segment_type = "unknown"
@@ -140,22 +160,34 @@ def match_meals_to_events(meals_df: pd.DataFrame, events: List[MealEvent],
         if next_meal and next_peak:
             if next_meal.detected_at < next_peak.detected_at:
                 # Next meal comes before peak
-                segment_end = next_meal.detected_at
-                segment_end_glucose = next_meal.glucose_at_detection
-                segment_type = "to_next_meal"
+                if is_merged_with_next:
+                    # Merged with next - treat as going to peak (clean)
+                    segment_type = "to_peak_merged"
+                    segment_end = next_peak.detected_at
+                    segment_end_glucose = next_peak.glucose_at_detection
+                else:
+                    # Distinct meals - composite
+                    segment_type = "to_next_meal"
+                    segment_end = next_meal.detected_at
+                    segment_end_glucose = next_meal.glucose_at_detection
             else:
                 # Peak comes before next meal
                 segment_end = next_peak.detected_at
                 segment_end_glucose = next_peak.glucose_at_detection
-                segment_type = "to_peak"
+                # If merged with previous, mark as merged
+                segment_type = "to_peak_merged" if is_merged_with_prev else "to_peak"
         elif next_peak:
             segment_end = next_peak.detected_at
             segment_end_glucose = next_peak.glucose_at_detection
-            segment_type = "to_peak"
+            # If merged with previous, mark as merged
+            segment_type = "to_peak_merged" if is_merged_with_prev else "to_peak"
         elif next_meal:
+            if is_merged_with_next:
+                segment_type = "to_peak_merged"  # Will be clean even without peak
+            else:
+                segment_type = "to_next_meal"
             segment_end = next_meal.detected_at
             segment_end_glucose = next_meal.glucose_at_detection
-            segment_type = "to_next_meal"
 
         # Calculate ΔG for this segment
         if segment_end_glucose is not None and event_glucose is not None:
@@ -323,7 +355,7 @@ def match_meals_to_events(meals_df: pd.DataFrame, events: List[MealEvent],
                 glucose_at_start=seg["event_glucose"],
                 glucose_at_peak=next_peak.glucose_at_detection if next_peak else None,
                 glucose_rise=delta_g,
-                is_clean_event=(seg["segment_type"] == "to_peak"),
+                is_clean_event=(seg["segment_type"] in ("to_peak", "to_peak_merged")),
                 time_to_peak_minutes=time_to_peak,
                 delta_g_to_next_event=delta_g if seg["segment_type"] == "to_next_meal" else None
             )
@@ -352,8 +384,8 @@ def match_meals_to_events(meals_df: pd.DataFrame, events: List[MealEvent],
             glucose_at_start=seg["event_glucose"],
             glucose_at_peak=next_peak.glucose_at_detection if next_peak else None,
             total_glucose_rise=seg["delta_g"],
-            is_stacked=False,
-            is_clean=(seg["segment_type"] == "to_peak"),
+            is_stacked=(seg["segment_type"] == "to_next_meal"),
+            is_clean=(seg["segment_type"] in ("to_peak", "to_peak_merged")),
             time_to_peak_minutes=seg["time_to_peak"],
             delta_g_to_next_event=seg["delta_g"] if seg["segment_type"] == "to_next_meal" else None,
             next_event_time=seg["segment_end"]
