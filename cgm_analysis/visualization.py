@@ -14,7 +14,8 @@ from .detection import detect_secondary_meal_events
 
 def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEvent],
                                        thresholds: SimplifiedThresholds,
-                                       matches: List[MealMatch] = None) -> go.Figure:
+                                       matches: List[MealMatch] = None,
+                                       derived_meal_times: List = None) -> go.Figure:
     """
     Create a plot for the simplified detection method showing:
     1. Raw and smoothed glucose curves
@@ -434,6 +435,52 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                     bgcolor="rgba(255,255,255,0.6)",
                     row=1, col=1
                 )
+
+    # Plot derived meal times as X markers (from dataset)
+    if derived_meal_times is not None and len(derived_meal_times) > 0:
+        # Find glucose values at derived meal times by interpolating from CGM data
+        derived_times = []
+        derived_glucose = []
+
+        for dmt in derived_meal_times:
+            if pd.isna(dmt):
+                continue
+            # Find the closest CGM reading to get approximate glucose value
+            time_diffs = abs(df["datetime_ist"] - dmt)
+            closest_idx = time_diffs.idxmin()
+            derived_times.append(dmt)
+            derived_glucose.append(df.loc[closest_idx, "value"])
+
+        if derived_times:
+            fig.add_trace(
+                go.Scatter(
+                    x=derived_times,
+                    y=derived_glucose,
+                    mode="markers",
+                    name="Derived Meal Time (Dataset)",
+                    marker=dict(
+                        size=14,
+                        color="#E74C3C",
+                        symbol="x",
+                        line=dict(color="#E74C3C", width=3)
+                    ),
+                    hovertemplate="<b>Derived Meal Time</b><br>Time: %{x|%H:%M}<br>Glucose: %{y:.1f} mg/dL<extra></extra>"
+                ),
+                row=1, col=1
+            )
+
+            # Add vertical lines for derived meal times
+            for dmt in derived_times:
+                dmt_ms = int(dmt.timestamp() * 1000)
+                for row in [1, 2, 3]:
+                    fig.add_vline(
+                        x=dmt_ms,
+                        line_width=1.5,
+                        line_dash="dot",
+                        line_color="#E74C3C",
+                        opacity=0.5,
+                        row=row, col=1
+                    )
 
     # Update layout
     fig.update_layout(

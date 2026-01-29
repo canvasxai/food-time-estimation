@@ -152,8 +152,17 @@ def main():
                     day_meals, events, cgm_df=day_cgm, thresholds=simplified_thresholds
                 )
 
+            # Get derived meal times if available
+            derived_meal_times = None
+            if "derived_meal_time_ist" in day_meals.columns:
+                derived_meal_times = day_meals["derived_meal_time_ist"].tolist()
+
             # Create and show plot (with matches if available)
-            fig = create_simplified_derivative_plot(day_cgm, events, simplified_thresholds, matches=matches_for_plot)
+            fig = create_simplified_derivative_plot(
+                day_cgm, events, simplified_thresholds,
+                matches=matches_for_plot,
+                derived_meal_times=derived_meal_times
+            )
             st.plotly_chart(fig, use_container_width=True)
 
             # Show detected events

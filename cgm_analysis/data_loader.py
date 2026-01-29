@@ -38,11 +38,24 @@ def load_meals_data(user_id: str) -> pd.DataFrame:
     meals_path = USER_DATA_PATH / user_id / "meals.csv"
     df = pd.read_csv(meals_path)
 
-    # Convert milliseconds to datetime in IST
-    df["datetime"] = pd.to_datetime(df["meal_timestamp"], unit="ms", utc=True)
+    # Convert timestamp to datetime - handle both milliseconds and string formats
+    first_val = df["meal_timestamp"].iloc[0]
+    if isinstance(first_val, (int, float)) or (isinstance(first_val, str) and first_val.isdigit()):
+        # Milliseconds format
+        df["datetime"] = pd.to_datetime(df["meal_timestamp"], unit="ms", utc=True)
+    else:
+        # String datetime format (e.g., "2024-10-25 22:12:50+05:30")
+        df["datetime"] = pd.to_datetime(df["meal_timestamp"], utc=True)
+
     df["datetime_ist"] = df["datetime"].dt.tz_convert(IST)
     df["date"] = df["datetime_ist"].dt.date
     df["time"] = df["datetime_ist"].dt.strftime("%H:%M:%S")
+
+    # Parse derived_meal_time if present
+    if "derived_meal_time" in df.columns:
+        df["derived_meal_time_ist"] = pd.to_datetime(
+            df["derived_meal_time"], format="mixed", utc=True
+        ).dt.tz_convert(IST)
 
     return df
 
