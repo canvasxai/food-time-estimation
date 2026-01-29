@@ -34,8 +34,9 @@ class CompositeMealEvent:
     Multiple logged meals can be matched to a single composite event.
 
     Classification:
-    - CLEAN: Has a well-defined peak within 180 minutes with no intervening events
-    - COMPOSITE: Has other events between the meal event and peak
+    - CLEAN: Meal event followed by peak within 180 minutes, no intervening meal events
+    - COMPOSITE: Meal event followed by another meal event, then a peak within 180 minutes
+    - NO_PEAK: Meal event where no peak is found within 180 minutes
     """
     event_id: str  # Unique identifier for this composite event
     start_time: datetime  # Time of the initial MEAL_START event
@@ -47,8 +48,10 @@ class CompositeMealEvent:
     glucose_at_peak: Optional[float]  # Glucose level at the peak
     total_glucose_rise: Optional[float]  # peak - start glucose (if peak found)
     is_stacked: bool  # True if there are secondary events (stacked meals)
-    # New fields for clean/composite classification
+    # Classification fields
     is_clean: bool = False  # True if clean event (no intervening events, peak within 180 min)
+    is_no_peak: bool = False  # True if no peak found within 180 minutes
+    classification: str = "unknown"  # "clean", "composite", or "no_peak"
     time_to_peak_minutes: Optional[float] = None  # Minutes from start to peak
     delta_g_to_next_event: Optional[float] = None  # Glucose change to next event (for composite)
     next_event_time: Optional[datetime] = None  # Time of next event (for composite)

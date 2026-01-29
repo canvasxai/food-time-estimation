@@ -357,26 +357,30 @@ def find_associated_peak(event: MealEvent, events: List[MealEvent]) -> Optional[
 
 
 def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
-                            merge_gap_minutes: int = 30) -> List[CompositeMealEvent]:
+                            merge_gap_minutes: int = 30,
+                            max_peak_window_minutes: int = 180) -> List[CompositeMealEvent]:
     """
     Detect composite meal events by analyzing meal-to-peak relationships.
 
     Classification:
-    - CLEAN: Meal event → Peak (single meal with a clearly defined peak, no other meals in between)
+    - CLEAN: Meal event followed by peak within 180 minutes, no intervening meal events
              Also includes merged meals (events within merge_gap_minutes are treated as one)
-    - COMPOSITE: Meal event → Meal event(s) → Peak (multiple distinct meals before peak)
+    - COMPOSITE: Meal event followed by another distinct meal event, then a peak within 180 minutes
       ALL meal events that share the same peak are labeled as composite
+    - NO_PEAK: Meal event where no peak is found within 180 minutes
 
     Algorithm:
     1. Collect all meal events (MEAL_START + SECONDARY_MEAL) sorted by time
     2. For each meal event, determine if it goes directly to a peak or to another meal first
     3. If the next meal is within merge_gap_minutes, treat as merged (clean)
     4. If multiple distinct meals share the same peak, ALL of them are marked as composite
+    5. If no peak is found within max_peak_window_minutes, mark as no_peak
 
     Args:
         events: List of all detected MealEvent objects
         cgm_df: CGM DataFrame for glucose values
         merge_gap_minutes: Events within this gap are considered merged (clean)
+        max_peak_window_minutes: Maximum time window to look for a peak (default 180)
 
     Returns:
         List of CompositeMealEvent objects
@@ -409,11 +413,15 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
         # Find next meal event (if any)
         next_meal = meal_events[i + 1] if i + 1 < len(meal_events) else None
 
-        # Find next peak after this event
+        # Find next peak after this event WITHIN the max_peak_window_minutes
         next_peak = None
+        next_peak_within_window = None
         for peak in peaks:
             if peak.detected_at > event.detected_at:
-                next_peak = peak
+                next_peak = peak  # First peak after event (any time)
+                time_to_this_peak = (peak.detected_at - event.detected_at).total_seconds() / 60
+                if time_to_this_peak <= max_peak_window_minutes:
+                    next_peak_within_window = peak
                 break
 
         # Check if this event is merged with previous or next event
@@ -434,18 +442,24 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
         is_part_of_merge_group = is_merged_with_next or is_merged_with_prev
 
         # Determine segment type
+        # Key change: use next_peak_within_window to check if peak is within 180 min
         segment_type = "unknown"
         segment_end = None
         segment_end_glucose = None
 
-        if next_meal and next_peak:
-            if next_meal.detected_at < next_peak.detected_at:
+        if next_peak_within_window is None and not is_part_of_merge_group:
+            # No peak within 180 minutes and not part of a merge group
+            segment_type = "no_peak"
+            segment_end = None
+            segment_end_glucose = None
+        elif next_meal and next_peak_within_window:
+            if next_meal.detected_at < next_peak_within_window.detected_at:
                 # Next meal comes before peak
                 if is_merged_with_next:
                     # Merged with next - treat as going to peak (clean)
                     segment_type = "to_peak_merged"
-                    segment_end = next_peak.detected_at
-                    segment_end_glucose = next_peak.glucose_at_detection
+                    segment_end = next_peak_within_window.detected_at
+                    segment_end_glucose = next_peak_within_window.glucose_at_detection
                 else:
                     # Distinct meals - composite
                     segment_type = "to_next_meal"
@@ -455,28 +469,51 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
                 # Peak comes before next meal - segment goes to peak
                 # If merged with previous, mark as merged
                 segment_type = "to_peak_merged" if is_merged_with_prev else "to_peak"
-                segment_end = next_peak.detected_at
-                segment_end_glucose = next_peak.glucose_at_detection
-        elif next_peak:
+                segment_end = next_peak_within_window.detected_at
+                segment_end_glucose = next_peak_within_window.glucose_at_detection
+        elif next_peak_within_window:
             # If merged with previous, mark as merged
             segment_type = "to_peak_merged" if is_merged_with_prev else "to_peak"
-            segment_end = next_peak.detected_at
-            segment_end_glucose = next_peak.glucose_at_detection
+            segment_end = next_peak_within_window.detected_at
+            segment_end_glucose = next_peak_within_window.glucose_at_detection
         elif next_meal:
+            # No peak within window, but there's a next meal
             if is_merged_with_next:
-                segment_type = "to_peak_merged"  # Will be clean even without peak
+                # Check if the merged group eventually has a peak within window
+                # For now, mark as merged and let the next event determine
+                segment_type = "to_peak_merged"
             else:
-                segment_type = "to_next_meal"
-            segment_end = next_meal.detected_at
-            segment_end_glucose = next_meal.glucose_at_detection
+                # Check if there's a peak after the next meal within the window from THIS event
+                # If yes, it's composite; if no, it's no_peak
+                peak_after_next_meal = None
+                for peak in peaks:
+                    if peak.detected_at > next_meal.detected_at:
+                        time_from_event = (peak.detected_at - event.detected_at).total_seconds() / 60
+                        if time_from_event <= max_peak_window_minutes:
+                            peak_after_next_meal = peak
+                        break
+
+                if peak_after_next_meal:
+                    segment_type = "to_next_meal"
+                    segment_end = next_meal.detected_at
+                    segment_end_glucose = next_meal.glucose_at_detection
+                else:
+                    segment_type = "no_peak"
+                    segment_end = None
+                    segment_end_glucose = None
+        else:
+            # No next meal and no peak within window
+            segment_type = "no_peak"
+            segment_end = None
+            segment_end_glucose = None
 
         # Calculate delta G
         delta_g = segment_end_glucose - event_glucose if segment_end_glucose and event_glucose else 0
 
-        # Calculate time to peak
+        # Calculate time to peak (use the peak within window if available)
         time_to_peak = None
-        if next_peak:
-            time_to_peak = (next_peak.detected_at - event.detected_at).total_seconds() / 60
+        if next_peak_within_window:
+            time_to_peak = (next_peak_within_window.detected_at - event.detected_at).total_seconds() / 60
 
         event_segments.append({
             "event": event,
@@ -486,9 +523,11 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
             "segment_end_glucose": segment_end_glucose,
             "segment_type": segment_type,
             "delta_g": delta_g,
-            "next_peak": next_peak,
+            "next_peak": next_peak,  # Keep the actual next peak (for reference)
+            "next_peak_within_window": next_peak_within_window,  # Peak within 180 min
             "time_to_peak": time_to_peak,
-            "is_composite": False  # Will be determined in next step
+            "is_composite": False,  # Will be determined in next step
+            "is_no_peak": segment_type == "no_peak"
         })
 
     # === STEP 2: Determine which events are COMPOSITE ===
@@ -497,27 +536,33 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
     # - It shares the same peak with a previous meal event that was "to_next_meal"
     #
     # Events with segment_type "to_peak" or "to_peak_merged" are CLEAN
+    # Events with segment_type "no_peak" are NO_PEAK (no peak within 180 min)
     #
     # We iterate forward and propagate composite status
 
     for i in range(len(event_segments)):
         seg = event_segments[i]
 
-        if seg["segment_type"] == "to_next_meal":
+        if seg["segment_type"] == "no_peak":
+            # Already marked as no_peak, skip
+            continue
+        elif seg["segment_type"] == "to_next_meal":
             # This event goes to another distinct meal before peak - it's composite
             seg["is_composite"] = True
         elif seg["segment_type"] in ("to_peak", "to_peak_merged"):
             # Check if any previous event shares the same peak AND was composite
             if i > 0:
                 prev_seg = event_segments[i - 1]
-                if (prev_seg["next_peak"] == seg["next_peak"] and
+                if (prev_seg["next_peak_within_window"] == seg["next_peak_within_window"] and
+                    prev_seg["next_peak_within_window"] is not None and
                     prev_seg["segment_type"] == "to_next_meal"):
                     # Previous event was heading to a distinct meal, and we share the same peak
                     # Both are composite
                     seg["is_composite"] = True
                     # Also mark all previous events that share this peak as composite
                     for j in range(i - 1, -1, -1):
-                        if event_segments[j]["next_peak"] == seg["next_peak"]:
+                        if (event_segments[j]["next_peak_within_window"] == seg["next_peak_within_window"] and
+                            event_segments[j]["next_peak_within_window"] is not None):
                             event_segments[j]["is_composite"] = True
                         else:
                             break
@@ -527,8 +572,20 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
 
     for i, seg in enumerate(event_segments):
         event = seg["event"]
-        next_peak = seg["next_peak"]
+        next_peak_within_window = seg["next_peak_within_window"]
         is_composite = seg["is_composite"]
+        is_no_peak = seg["is_no_peak"]
+
+        # Determine classification
+        if is_no_peak:
+            classification = "no_peak"
+            is_clean = False
+        elif is_composite:
+            classification = "composite"
+            is_clean = False
+        else:
+            classification = "clean"
+            is_clean = True
 
         # Calculate delta G to next event (only for composite events going to next meal)
         delta_g_to_next_event = None
@@ -541,14 +598,16 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
             event_id=f"E_{i}",
             start_time=seg["event_time"],
             end_time=seg["event_time"],
-            peak_time=next_peak.detected_at if next_peak else None,
+            peak_time=next_peak_within_window.detected_at if next_peak_within_window else None,
             primary_event=event,
             secondary_events=[],  # Not tracking secondary events separately anymore
             glucose_at_start=seg["event_glucose"],
-            glucose_at_peak=next_peak.glucose_at_detection if next_peak else None,
+            glucose_at_peak=next_peak_within_window.glucose_at_detection if next_peak_within_window else None,
             total_glucose_rise=seg["delta_g"] if seg["segment_type"] in ("to_peak", "to_peak_merged") else None,
             is_stacked=is_composite,  # True if multiple distinct meals share this peak
-            is_clean=not is_composite,
+            is_clean=is_clean,
+            is_no_peak=is_no_peak,
+            classification=classification,
             time_to_peak_minutes=seg["time_to_peak"],
             delta_g_to_next_event=delta_g_to_next_event,
             next_event_time=next_event_time
