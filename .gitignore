@@ -20,3 +20,25 @@ venv/
 # Claude Code
 .claude/
 dataset/
+
+# Generated HTML files
+*.html
+
+# Validation output files
+validation_output_*.txt
+
+# App variants
+app_dietary_comparison.py
+app_estimation.py
+
+# Test files
+test_estimation.py
+
+# Shell scripts
+split_by_user.sh
+
+# Estimation module (if not needed in repo)
+cgm_analysis/estimation.py
+
+# Dietary response data
+user_data/*/dietary_response.csv

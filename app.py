@@ -13,6 +13,7 @@ from cgm_analysis import (
     get_available_users,
     load_cgm_data,
     load_meals_data,
+    load_dietary_response_data,
     get_available_dates,
     filter_data_for_date,
     USER_DATA_PATH,
@@ -48,13 +49,23 @@ def main():
     # Load data for selected user
     cgm_df = load_cgm_data(selected_user)
     meals_df = load_meals_data(selected_user)
+    dietary_response_df = load_dietary_response_data(selected_user)
 
     # Date selection
     available_dates = get_available_dates(cgm_df)
+    # Get dates that have logged meals
+    dates_with_meals = set(meals_df["date"].unique()) if len(meals_df) > 0 else set()
+
+    def format_date_with_meal_indicator(date):
+        date_str = date.strftime("%Y-%m-%d (%A)")
+        if date in dates_with_meals:
+            return f"🍽️ {date_str}"
+        return f"    {date_str}"
+
     selected_date = st.sidebar.selectbox(
         "Select Date",
         available_dates,
-        format_func=lambda x: x.strftime("%Y-%m-%d (%A)")
+        format_func=format_date_with_meal_indicator
     )
 
     # Extend view past midnight
@@ -67,6 +78,7 @@ def main():
     # Filter data for selected date
     day_cgm = filter_data_for_date(cgm_df, selected_date, extend_hours=extend_hours)
     day_meals = filter_data_for_date(meals_df, selected_date, extend_hours=extend_hours)
+    day_dietary = filter_data_for_date(dietary_response_df, selected_date, extend_hours=extend_hours) if len(dietary_response_df) > 0 else pd.DataFrame()
 
     # Detection method selection
     st.sidebar.header("Meal Detection")
@@ -91,8 +103,14 @@ def main():
 
         start_hour = st.sidebar.slider(
             "Start Hour",
-            min_value=5, max_value=10, value=7, step=1,
+            min_value=5, max_value=12, value=7, step=1,
             help="Only detect events after this hour (24h format)"
+        )
+
+        end_hour = st.sidebar.slider(
+            "End Hour",
+            min_value=20, max_value=24, value=24, step=1,
+            help="Stop detecting events after this hour (24h format, 24 = midnight)"
         )
 
         absorption_lag = st.sidebar.slider(
@@ -132,6 +150,7 @@ def main():
             smoothing_window=smoothing_window,
             min_derivative_magnitude=min_derivative,
             start_hour=start_hour,
+            end_hour=end_hour,
             meal_absorption_lag=absorption_lag,
             secondary_meal_dg_dt_threshold=secondary_dg_dt_threshold,
             event_merge_gap_minutes=event_merge_gap,
@@ -143,12 +162,25 @@ def main():
             # Detect events using simplified method
             events = detect_meal_events_simplified(day_cgm, simplified_thresholds)
 
-            # Perform matching first so we can show matches on the plot
-            matches_for_plot = []
+            # Step 1: Detect and classify composite events (based on CGM only - no meals needed)
+            # This is the single source of truth for classification (clean/composite/no_peak)
             composite_events_for_plot = []
+            discarded_events_for_plot = []
+            if events:
+                from cgm_analysis.detection import detect_composite_events
+                composite_events_for_plot, discarded_events_for_plot = detect_composite_events(
+                    events,
+                    cgm_df=day_cgm,
+                    merge_gap_minutes=simplified_thresholds.event_merge_gap_minutes,
+                    max_peak_window_minutes=180,
+                    return_discarded=True
+                )
+
+            # Step 2: Match meals to events (only when meals exist - this is optional)
+            matches_for_plot = []
             validation_results_for_plot = {}
             if len(day_meals) > 0 and events:
-                matches_for_plot, _, composite_events_for_plot, validation_results_for_plot = match_meals_to_events(
+                matches_for_plot, _, _, validation_results_for_plot = match_meals_to_events(
                     day_meals, events, cgm_df=day_cgm, thresholds=simplified_thresholds
                 )
 
@@ -157,11 +189,14 @@ def main():
             if "derived_meal_time_ist" in day_meals.columns:
                 derived_meal_times = day_meals["derived_meal_time_ist"].tolist()
 
-            # Create and show plot (with matches if available)
+            # Create and show plot (with matches, composite events, and discarded events)
             fig = create_simplified_derivative_plot(
                 day_cgm, events, simplified_thresholds,
                 matches=matches_for_plot,
-                derived_meal_times=derived_meal_times
+                derived_meal_times=derived_meal_times,
+                composite_events=composite_events_for_plot,
+                discarded_events=discarded_events_for_plot,
+                dietary_response_df=day_dietary if len(day_dietary) > 0 else None
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -206,30 +241,139 @@ def main():
                                 delta=f"{event.confidence:.0%} confidence"
                             )
 
-                # Show all events in detailed table
-                with st.expander(f"📊 All Detected Events ({len(events)} total)", expanded=False):
+                # Show all events in detailed table (chronological with classification)
+                with st.expander(f"📊 All Detected Events ({len(events)} total)", expanded=True):
+                    # Build a unified chronological view using composite events
                     events_data = []
-                    for event in events:
+
+                    # Create a mapping from event to its composite classification
+                    event_to_composite = {}
+                    if composite_events_for_plot:
+                        for comp in composite_events_for_plot:
+                            # Map primary event
+                            event_to_composite[comp.primary_event.detected_at] = comp
+                            # Map secondary events
+                            for sec in comp.secondary_events:
+                                event_to_composite[sec.detected_at] = comp
+
+                    # Sort all events by time
+                    sorted_events = sorted(events, key=lambda e: e.detected_at)
+
+                    for event in sorted_events:
+                        comp = event_to_composite.get(event.detected_at)
+
+                        # Determine classification
+                        if event.event_type == "PEAK":
+                            classification = "—"
+                            event_id = "—"
+                            merged_count = "—"
+                            associated_peak = "—"
+                            glucose_rise = "—"
+                            time_to_peak = "—"
+                        else:
+                            # Meal event - get classification from composite
+                            if comp:
+                                if comp.is_clean:
+                                    classification = "✅ Clean"
+                                elif comp.is_no_peak:
+                                    classification = "⚠️ No Peak"
+                                else:
+                                    classification = "⚡ Composite"
+
+                                event_id = comp.event_id
+
+                                # Count merged events (primary + secondary in same composite)
+                                merged_count = 1 + len(comp.secondary_events)
+                                if merged_count > 1:
+                                    merged_count = f"🔗 {merged_count}"
+                                else:
+                                    merged_count = "1"
+
+                                # Associated peak
+                                if comp.peak_time:
+                                    associated_peak = comp.peak_time.strftime("%H:%M")
+                                else:
+                                    associated_peak = "—"
+
+                                # Glucose rise
+                                if comp.total_glucose_rise is not None:
+                                    glucose_rise = f"+{comp.total_glucose_rise:.0f}"
+                                else:
+                                    glucose_rise = "—"
+
+                                # Time to peak
+                                if comp.time_to_peak_minutes is not None:
+                                    time_to_peak = f"{comp.time_to_peak_minutes:.0f} min"
+                                else:
+                                    time_to_peak = "—"
+                            else:
+                                # Event not in composite_events - it was discarded (insufficient ΔG)
+                                classification = "🚫 Discarded"
+                                event_id = "—"
+                                merged_count = "—"
+                                associated_peak = "—"
+                                glucose_rise = "—"
+                                time_to_peak = "—"
+
+                        # Event type display
+                        if event.event_type == "MEAL_START":
+                            type_display = "🟢 MEAL_START"
+                        elif event.event_type == "SECONDARY_MEAL":
+                            type_display = "🟡 SECONDARY"
+                        elif event.event_type == "PEAK":
+                            type_display = "🔵 PEAK"
+                        else:
+                            type_display = event.event_type
+
                         row = {
-                            "Type": event.event_type,
-                            "Detected At": event.detected_at.strftime("%H:%M:%S"),
-                            "Est. Meal Time": event.estimated_meal_time.strftime("%H:%M:%S") if event.estimated_meal_time else "N/A",
-                            "Confidence": f"{event.confidence:.0%}",
-                            "dG/dt": f"{event.dG_dt_at_detection:.3f}",
-                            "Glucose": f"{event.glucose_at_detection:.1f}"
+                            "Time": event.detected_at.strftime("%H:%M"),
+                            "Type": type_display,
+                            "Classification": classification,
+                            "Event ID": event_id,
+                            "Merged": merged_count,
+                            "Peak At": associated_peak,
+                            "T→Peak": time_to_peak,
+                            "ΔG": glucose_rise,
+                            "Glucose": f"{event.glucose_at_detection:.0f}",
+                            "dG/dt": f"{event.dG_dt_at_detection:.2f}"
                         }
                         events_data.append(row)
 
                     events_df = pd.DataFrame(events_data)
-                    st.dataframe(events_df, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        events_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Time": st.column_config.TextColumn("Time", help="Time of event detection"),
+                            "Type": st.column_config.TextColumn("Type", help="MEAL_START, SECONDARY, or PEAK"),
+                            "Classification": st.column_config.TextColumn("Class", help="Clean ✅, Composite ⚡, or No Peak ⚠️"),
+                            "Event ID": st.column_config.TextColumn("Event", help="Composite event ID"),
+                            "Merged": st.column_config.TextColumn("Merged", help="Number of events merged together"),
+                            "Peak At": st.column_config.TextColumn("Peak At", help="Time of associated peak"),
+                            "T→Peak": st.column_config.TextColumn("T→Peak", help="Time from event to peak"),
+                            "ΔG": st.column_config.TextColumn("ΔG", help="Total glucose rise to peak (mg/dL)"),
+                            "Glucose": st.column_config.TextColumn("Glucose", help="Glucose at detection (mg/dL)"),
+                            "dG/dt": st.column_config.TextColumn("dG/dt", help="Rate of glucose change")
+                        }
+                    )
 
                     st.markdown(f"""
                     **Event Types:**
                     - 🟢 **MEAL_START**: dG/dt crosses from negative to positive (local minimum = meal onset)
-                    - 🔵 **PEAK**: dG/dt crosses from positive to negative (local maximum = post-prandial peak)
+                    - 🟡 **SECONDARY**: Additional meal detected during glucose rise (d²G/dt² maximum)
+                    - 🔵 **PEAK**: Local maximum in glucose (scipy peak detection)
+
+                    **Classifications:**
+                    - ✅ **Clean**: Single meal → peak (clear glucose response)
+                    - ⚡ **Composite**: Multiple meals share the same peak (stacked meals)
+                    - ⚠️ **No Peak**: Meal detected but no peak found within 180 min window
+                    - 🚫 **Discarded**: Filtered out due to insufficient ΔG (< 5 mg/dL) to next event (noise)
+
+                    **Merged Events (🔗):** Events within {event_merge_gap} min are merged as one meal occasion.
 
                     **Chart Legend:**
-                    - 🟢 **Solid green lines**: Estimated meal times (when you likely ate)
+                    - 🟢 **Solid green lines (dG/dt plot)**: Zero-crossings where meal events detected
                     - 🔵 **Dotted blue lines**: Peak times (post-prandial peak)
                     - 🟣 **Dash-dot purple line**: Detection start time ({start_hour}:00)
                     - ⬜ **Gray shaded zone**: Noise threshold (crossings here are ignored)
@@ -248,28 +392,49 @@ def main():
                     # Show composite events summary
                     if composite_events:
                         clean_events = sum(1 for c in composite_events if c.is_clean)
-                        composite_count = len(composite_events) - clean_events
+                        composite_count = sum(1 for c in composite_events if not c.is_clean and not c.is_no_peak)
+                        no_peak_count = sum(1 for c in composite_events if c.is_no_peak)
 
-                        st.info(f"📦 Detected **{len(composite_events)} events**: {clean_events} clean ✓, {composite_count} composite (stacked meals)")
+                        summary_parts = [f"{clean_events} clean ✓", f"{composite_count} composite ⚡"]
+                        if no_peak_count > 0:
+                            summary_parts.append(f"{no_peak_count} no peak ⚠️")
+
+                        st.info(f"📦 Detected **{len(composite_events)} events**: {', '.join(summary_parts)}")
 
                         with st.expander(f"📦 Event Classification Detail ({len(composite_events)} events)", expanded=False):
                             for comp in composite_events:
+                                # Determine classification label and icon
                                 if comp.is_clean:
-                                    st.markdown(f"**{comp.event_id}** (✅ Clean)")
-                                    st.markdown(f"- Time: {comp.start_time.strftime('%H:%M')}")
-                                    if comp.time_to_peak_minutes:
-                                        st.markdown(f"- Time to peak: {comp.time_to_peak_minutes:.0f} min")
-                                    if comp.total_glucose_rise:
-                                        st.markdown(f"- Glucose rise: **{comp.total_glucose_rise:.0f} mg/dL** ({comp.glucose_at_start:.0f} → {comp.glucose_at_peak:.0f})")
+                                    label = "✅ Clean"
+                                elif comp.is_no_peak:
+                                    label = "⚠️ No Peak"
                                 else:
-                                    st.markdown(f"**{comp.event_id}** (⚡ Composite)")
-                                    st.markdown(f"- Start: {comp.start_time.strftime('%H:%M')} | End: {comp.end_time.strftime('%H:%M')}")
-                                    st.markdown(f"- Primary event + {len(comp.secondary_events)} secondary event(s)")
+                                    label = "⚡ Composite"
+
+                                st.markdown(f"**{comp.event_id}** ({label})")
+                                st.markdown(f"- Time: {comp.start_time.strftime('%H:%M')}")
+
+                                # Show merged events count if any
+                                if comp.secondary_events and len(comp.secondary_events) > 0:
+                                    st.markdown(f"- Merged: {1 + len(comp.secondary_events)} events")
+
+                                if comp.is_clean:
                                     if comp.time_to_peak_minutes:
                                         st.markdown(f"- Time to peak: {comp.time_to_peak_minutes:.0f} min")
-                                    if comp.total_glucose_rise:
+                                    if comp.total_glucose_rise and comp.glucose_at_start is not None and comp.glucose_at_peak is not None:
+                                        st.markdown(f"- Glucose rise: **{comp.total_glucose_rise:.0f} mg/dL** ({comp.glucose_at_start:.0f} → {comp.glucose_at_peak:.0f})")
+
+                                elif comp.is_no_peak:
+                                    st.markdown(f"- No peak detected within 180 min window")
+                                    if comp.glucose_at_start is not None:
+                                        st.markdown(f"- Glucose at start: {comp.glucose_at_start:.0f} mg/dL")
+
+                                else:  # Composite
+                                    if comp.time_to_peak_minutes:
+                                        st.markdown(f"- Time to peak: {comp.time_to_peak_minutes:.0f} min")
+                                    if comp.total_glucose_rise and comp.glucose_at_start is not None and comp.glucose_at_peak is not None:
                                         st.markdown(f"- Total glucose rise: **{comp.total_glucose_rise:.0f} mg/dL** ({comp.glucose_at_start:.0f} → {comp.glucose_at_peak:.0f})")
-                                    if comp.delta_g_to_next_event is not None:
+                                    if comp.delta_g_to_next_event is not None and comp.next_event_time:
                                         st.markdown(f"- ΔG to next event: **{comp.delta_g_to_next_event:.0f} mg/dL** (at {comp.next_event_time.strftime('%H:%M')})")
 
                                     if comp.event_id in validation_results:
@@ -277,6 +442,7 @@ def main():
                                         if val["actual_rise"] is not None:
                                             status = "✅" if val["is_valid"] else "⚠️"
                                             st.markdown(f"- Validation: {status} Expected rise: {val['expected_rise']:.0f} mg/dL, Actual: {val['actual_rise']:.0f} mg/dL (confidence: {val['confidence']:.0%})")
+
                                 st.markdown("---")
 
                     if matches:

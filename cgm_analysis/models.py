@@ -96,6 +96,7 @@ class SimplifiedThresholds:
     smoothing_window: int = 5  # Rolling average window size
     min_derivative_magnitude: float = 0.01  # Minimum |dG/dt| to consider a crossing significant
     start_hour: int = 7  # Only detect events after this hour (24h format)
+    end_hour: int = 24  # Stop detecting events after this hour (24h format, 24 = midnight)
     meal_absorption_lag: int = 0  # minutes - time from eating to detectable rise
     secondary_meal_dg_dt_threshold: float = -0.1  # Minimum dG/dt for secondary meal detection (can be negative)
     event_merge_gap_minutes: int = 30  # Merge meal events within this many minutes

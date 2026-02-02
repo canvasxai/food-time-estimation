@@ -65,9 +65,12 @@ def detect_secondary_meal_events(
         detection_date = detection_datetime.date()
         detection_hour = detection_datetime.hour
 
-        # Skip if before start hour ON THE PRIMARY DATE
-        if detection_date == primary_date and detection_hour < thresholds.start_hour:
-            continue
+        # Skip if before start hour or after end hour ON THE PRIMARY DATE
+        if detection_date == primary_date:
+            if detection_hour < thresholds.start_hour:
+                continue
+            if thresholds.end_hour < 24 and detection_hour >= thresholds.end_hour:
+                continue
 
         # Estimated meal time is slightly before detection
         estimated_meal_time = detection_datetime - timedelta(minutes=thresholds.meal_absorption_lag // 2)
@@ -248,8 +251,12 @@ def detect_meal_events_simplified(cgm_df: pd.DataFrame, thresholds: SimplifiedTh
         curr_date = timestamp_curr.date()
         curr_hour = timestamp_curr.hour
 
-        if curr_date == primary_date and curr_hour < thresholds.start_hour:
-            continue
+        # Apply start_hour and end_hour filters on the primary date
+        if curr_date == primary_date:
+            if curr_hour < thresholds.start_hour:
+                continue
+            if thresholds.end_hour < 24 and curr_hour >= thresholds.end_hour:
+                continue
 
         magnitude_before = abs(dG_dt_prev)
         magnitude_after = abs(dG_dt_curr)
@@ -301,9 +308,12 @@ def detect_meal_events_simplified(cgm_df: pd.DataFrame, thresholds: SimplifiedTh
         peak_date = peak_timestamp.date()
         peak_hour = peak_timestamp.hour
 
-        # Apply start_hour filter
-        if peak_date == primary_date and peak_hour < thresholds.start_hour:
-            continue
+        # Apply start_hour and end_hour filters
+        if peak_date == primary_date:
+            if peak_hour < thresholds.start_hour:
+                continue
+            if thresholds.end_hour < 24 and peak_hour >= thresholds.end_hour:
+                continue
 
         peak_glucose = raw_glucose[idx]
 
@@ -356,11 +366,15 @@ def find_associated_peak(event: MealEvent, events: List[MealEvent]) -> Optional[
     return None
 
 
-def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
+def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame = None,
                             merge_gap_minutes: int = 30,
-                            max_peak_window_minutes: int = 180) -> List[CompositeMealEvent]:
+                            max_peak_window_minutes: int = 180,
+                            return_discarded: bool = False):
     """
-    Detect composite meal events by analyzing meal-to-peak relationships.
+    Detect and classify composite meal events by analyzing meal-to-peak relationships.
+
+    THIS IS THE SINGLE SOURCE OF TRUTH FOR EVENT CLASSIFICATION.
+    All classification (clean/composite/no_peak) happens here.
 
     Classification:
     - CLEAN: Meal event followed by peak within 180 minutes, no intervening meal events
@@ -371,19 +385,22 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
 
     Algorithm:
     1. Collect all meal events (MEAL_START + SECONDARY_MEAL) sorted by time
-    2. For each meal event, determine if it goes directly to a peak or to another meal first
-    3. If the next meal is within merge_gap_minutes, treat as merged (clean)
-    4. If multiple distinct meals share the same peak, ALL of them are marked as composite
+    2. Build merge groups (events within merge_gap_minutes)
+    3. For each merge group, determine if it goes directly to a peak or to another meal first
+    4. If multiple distinct meal groups share the same peak, ALL of them are marked as composite
     5. If no peak is found within max_peak_window_minutes, mark as no_peak
+    6. For merged groups, use the mean time as the event time
 
     Args:
         events: List of all detected MealEvent objects
-        cgm_df: CGM DataFrame for glucose values
+        cgm_df: CGM DataFrame for glucose values (optional, not currently used)
         merge_gap_minutes: Events within this gap are considered merged (clean)
         max_peak_window_minutes: Maximum time window to look for a peak (default 180)
+        return_discarded: If True, also return list of discarded events (insufficient ΔG)
 
     Returns:
-        List of CompositeMealEvent objects
+        List of CompositeMealEvent objects with classification already set
+        If return_discarded=True, returns tuple of (composite_events, discarded_events)
     """
     if not events:
         return []
@@ -398,12 +415,6 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
         return []
 
     # === STEP 1: Build segments for each meal event ===
-    # For each meal event, find:
-    # - The next meal event (if any)
-    # - The next peak after this event
-    # - Whether segment goes to_next_meal or to_peak
-    # - Whether the next meal is within merge gap (would be merged)
-
     event_segments = []
 
     for i, event in enumerate(meal_events):
@@ -413,104 +424,57 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
         # Find next meal event (if any)
         next_meal = meal_events[i + 1] if i + 1 < len(meal_events) else None
 
-        # Find next peak after this event WITHIN the max_peak_window_minutes
+        # Find next peak after this event
         next_peak = None
         next_peak_within_window = None
         for peak in peaks:
             if peak.detected_at > event.detected_at:
-                next_peak = peak  # First peak after event (any time)
+                next_peak = peak
                 time_to_this_peak = (peak.detected_at - event.detected_at).total_seconds() / 60
                 if time_to_this_peak <= max_peak_window_minutes:
                     next_peak_within_window = peak
                 break
 
-        # Check if this event is merged with previous or next event
-        # An event is "merged" if it's within merge_gap of an adjacent event
-        is_merged_with_next = False
-        is_merged_with_prev = False
-
-        if next_meal:
-            time_to_next_meal = (next_meal.detected_at - event.detected_at).total_seconds() / 60
-            is_merged_with_next = time_to_next_meal <= merge_gap_minutes
-
-        prev_meal = meal_events[i - 1] if i > 0 else None
-        if prev_meal:
-            time_from_prev_meal = (event.detected_at - prev_meal.detected_at).total_seconds() / 60
-            is_merged_with_prev = time_from_prev_meal <= merge_gap_minutes
-
-        # Event is part of a merge group if merged with either neighbor
-        is_part_of_merge_group = is_merged_with_next or is_merged_with_prev
-
-        # Determine segment type
-        # Key change: use next_peak_within_window to check if peak is within 180 min
+        # Determine segment type and end point
         segment_type = "unknown"
         segment_end = None
         segment_end_glucose = None
 
-        if next_peak_within_window is None and not is_part_of_merge_group:
-            # No peak within 180 minutes and not part of a merge group
-            segment_type = "no_peak"
-            segment_end = None
-            segment_end_glucose = None
-        elif next_meal and next_peak_within_window:
+        if next_meal and next_peak_within_window:
             if next_meal.detected_at < next_peak_within_window.detected_at:
-                # Next meal comes before peak
-                if is_merged_with_next:
-                    # Merged with next - treat as going to peak (clean)
-                    segment_type = "to_peak_merged"
-                    segment_end = next_peak_within_window.detected_at
-                    segment_end_glucose = next_peak_within_window.glucose_at_detection
-                else:
-                    # Distinct meals - composite
-                    segment_type = "to_next_meal"
-                    segment_end = next_meal.detected_at
-                    segment_end_glucose = next_meal.glucose_at_detection
+                segment_type = "to_next_meal"
+                segment_end = next_meal.detected_at
+                segment_end_glucose = next_meal.glucose_at_detection
             else:
-                # Peak comes before next meal - segment goes to peak
-                # If merged with previous, mark as merged
-                segment_type = "to_peak_merged" if is_merged_with_prev else "to_peak"
+                segment_type = "to_peak"
                 segment_end = next_peak_within_window.detected_at
                 segment_end_glucose = next_peak_within_window.glucose_at_detection
         elif next_peak_within_window:
-            # If merged with previous, mark as merged
-            segment_type = "to_peak_merged" if is_merged_with_prev else "to_peak"
+            segment_type = "to_peak"
             segment_end = next_peak_within_window.detected_at
             segment_end_glucose = next_peak_within_window.glucose_at_detection
         elif next_meal:
-            # No peak within window, but there's a next meal
-            if is_merged_with_next:
-                # Check if the merged group eventually has a peak within window
-                # For now, mark as merged and let the next event determine
-                segment_type = "to_peak_merged"
+            # Check if there's a peak after the next meal within window
+            peak_after_next_meal = None
+            for peak in peaks:
+                if peak.detected_at > next_meal.detected_at:
+                    time_from_event = (peak.detected_at - event.detected_at).total_seconds() / 60
+                    if time_from_event <= max_peak_window_minutes:
+                        peak_after_next_meal = peak
+                        next_peak_within_window = peak  # Update for later use
+                    break
+
+            if peak_after_next_meal:
+                segment_type = "to_next_meal"
+                segment_end = next_meal.detected_at
+                segment_end_glucose = next_meal.glucose_at_detection
             else:
-                # Check if there's a peak after the next meal within the window from THIS event
-                # If yes, it's composite; if no, it's no_peak
-                peak_after_next_meal = None
-                for peak in peaks:
-                    if peak.detected_at > next_meal.detected_at:
-                        time_from_event = (peak.detected_at - event.detected_at).total_seconds() / 60
-                        if time_from_event <= max_peak_window_minutes:
-                            peak_after_next_meal = peak
-                        break
-
-                if peak_after_next_meal:
-                    segment_type = "to_next_meal"
-                    segment_end = next_meal.detected_at
-                    segment_end_glucose = next_meal.glucose_at_detection
-                else:
-                    segment_type = "no_peak"
-                    segment_end = None
-                    segment_end_glucose = None
+                segment_type = "no_peak"
         else:
-            # No next meal and no peak within window
             segment_type = "no_peak"
-            segment_end = None
-            segment_end_glucose = None
 
-        # Calculate delta G
+        # Calculate delta G and time to peak
         delta_g = segment_end_glucose - event_glucose if segment_end_glucose and event_glucose else 0
-
-        # Calculate time to peak (use the peak within window if available)
         time_to_peak = None
         if next_peak_within_window:
             time_to_peak = (next_peak_within_window.detected_at - event.detected_at).total_seconds() / 60
@@ -523,96 +487,214 @@ def detect_composite_events(events: List[MealEvent], cgm_df: pd.DataFrame,
             "segment_end_glucose": segment_end_glucose,
             "segment_type": segment_type,
             "delta_g": delta_g,
-            "next_peak": next_peak,  # Keep the actual next peak (for reference)
-            "next_peak_within_window": next_peak_within_window,  # Peak within 180 min
-            "time_to_peak": time_to_peak,
-            "is_composite": False,  # Will be determined in next step
-            "is_no_peak": segment_type == "no_peak"
+            "next_peak": next_peak,
+            "next_peak_within_window": next_peak_within_window,
+            "time_to_peak": time_to_peak
         })
 
-    # === STEP 2: Determine which events are COMPOSITE ===
-    # An event is COMPOSITE if:
-    # - Its segment_type is "to_next_meal" (there's another distinct meal before its peak), OR
-    # - It shares the same peak with a previous meal event that was "to_next_meal"
-    #
-    # Events with segment_type "to_peak" or "to_peak_merged" are CLEAN
-    # Events with segment_type "no_peak" are NO_PEAK (no peak within 180 min)
-    #
-    # We iterate forward and propagate composite status
-
-    for i in range(len(event_segments)):
-        seg = event_segments[i]
-
-        if seg["segment_type"] == "no_peak":
-            # Already marked as no_peak, skip
-            continue
-        elif seg["segment_type"] == "to_next_meal":
-            # This event goes to another distinct meal before peak - it's composite
-            seg["is_composite"] = True
-        elif seg["segment_type"] in ("to_peak", "to_peak_merged"):
-            # Check if any previous event shares the same peak AND was composite
-            if i > 0:
-                prev_seg = event_segments[i - 1]
-                if (prev_seg["next_peak_within_window"] == seg["next_peak_within_window"] and
-                    prev_seg["next_peak_within_window"] is not None and
-                    prev_seg["segment_type"] == "to_next_meal"):
-                    # Previous event was heading to a distinct meal, and we share the same peak
-                    # Both are composite
-                    seg["is_composite"] = True
-                    # Also mark all previous events that share this peak as composite
-                    for j in range(i - 1, -1, -1):
-                        if (event_segments[j]["next_peak_within_window"] == seg["next_peak_within_window"] and
-                            event_segments[j]["next_peak_within_window"] is not None):
-                            event_segments[j]["is_composite"] = True
-                        else:
-                            break
-
-    # === STEP 3: Create CompositeMealEvent objects ===
-    composite_events = []
+    # === STEP 2: Build merge groups ===
+    # Group events that are within merge_gap_minutes of each other
+    merge_groups = []
+    used_indices = set()
 
     for i, seg in enumerate(event_segments):
-        event = seg["event"]
-        next_peak_within_window = seg["next_peak_within_window"]
-        is_composite = seg["is_composite"]
-        is_no_peak = seg["is_no_peak"]
+        if i in used_indices:
+            continue
 
-        # Determine classification
-        if is_no_peak:
-            classification = "no_peak"
-            is_clean = False
-        elif is_composite:
-            classification = "composite"
-            is_clean = False
+        group = [i]
+        used_indices.add(i)
+
+        # Find all events that should be merged with this one
+        j = i + 1
+        while j < len(event_segments):
+            prev_seg = event_segments[group[-1]]
+            curr_seg = event_segments[j]
+            time_diff = (curr_seg["event_time"] - prev_seg["event_time"]).total_seconds() / 60
+
+            if time_diff <= merge_gap_minutes:
+                group.append(j)
+                used_indices.add(j)
+                j += 1
+            else:
+                break
+
+        merge_groups.append(group)
+
+    # === STEP 3: Build group info for each merge group ===
+    group_info = []
+    for group_idx, group in enumerate(merge_groups):
+        first_seg = event_segments[group[0]]
+        last_seg = event_segments[group[-1]]
+
+        # Calculate mean time for merged events
+        if len(group) > 1:
+            group_times = [event_segments[idx]["event_time"] for idx in group]
+            mean_timestamp = sum(t.timestamp() for t in group_times) / len(group_times)
+            start_time = datetime.fromtimestamp(mean_timestamp, tz=group_times[0].tzinfo)
         else:
-            classification = "clean"
-            is_clean = True
+            start_time = first_seg["event_time"]
 
-        # Calculate delta G to next event (only for composite events going to next meal)
-        delta_g_to_next_event = None
+        # Use the first event's glucose as start
+        start_glucose = first_seg["event_glucose"]
+        end_time = last_seg["event_time"]
+
+        # Peak is the next peak after the last event in the group
+        next_peak = last_seg["next_peak_within_window"]
+
+        # Calculate time to peak from merged event time
+        time_to_peak = None
+        if next_peak:
+            time_to_peak = (next_peak.detected_at - start_time).total_seconds() / 60
+
+        # Calculate total glucose rise from start to peak
+        total_rise = None
+        if next_peak and start_glucose is not None:
+            total_rise = next_peak.glucose_at_detection - start_glucose
+
+        # Determine if this group goes to another distinct meal before peak
+        segment_type = last_seg["segment_type"]
+        goes_to_next_meal = segment_type == "to_next_meal"
+
+        # Check if merged - if merged with next event, treat as going to peak
+        if len(group) > 1 or (group[-1] + 1 < len(event_segments)):
+            # Check if the "next meal" is actually within merge gap
+            if goes_to_next_meal and group[-1] + 1 < len(event_segments):
+                next_seg = event_segments[group[-1] + 1]
+                time_to_next = (next_seg["event_time"] - last_seg["event_time"]).total_seconds() / 60
+                if time_to_next <= merge_gap_minutes:
+                    # Next event would be merged, so this is not truly going to next meal
+                    goes_to_next_meal = False
+
+        # Delta G to next event (always calculate for filtering, not just when goes_to_next_meal)
+        delta_g_to_next = None
         next_event_time = None
-        if seg["segment_type"] == "to_next_meal":
-            delta_g_to_next_event = seg["delta_g"]
-            next_event_time = seg["segment_end"]
+        if goes_to_next_meal:
+            delta_g_to_next = last_seg["delta_g"]
+            next_event_time = last_seg["segment_end"]
+        elif group[-1] + 1 < len(event_segments):
+            # Even if not "goes_to_next_meal", calculate ΔG to next event for filtering
+            next_seg = event_segments[group[-1] + 1]
+            delta_g_to_next = next_seg["event_glucose"] - start_glucose
+            next_event_time = next_seg["event_time"]
+
+        group_info.append({
+            "group_idx": group_idx,
+            "indices": group,
+            "start_time": start_time,
+            "end_time": end_time,
+            "start_glucose": start_glucose,
+            "next_peak": next_peak,
+            "time_to_peak": time_to_peak,
+            "total_rise": total_rise,
+            "goes_to_next_meal": goes_to_next_meal,
+            "delta_g_to_next": delta_g_to_next,
+            "next_event_time": next_event_time,
+            "primary_event": first_seg["event"],
+            "secondary_events": [event_segments[idx]["event"] for idx in group[1:]],
+            "is_composite": False,
+            "is_no_peak": next_peak is None
+        })
+
+    # === STEP 3.5: Filter out events with insufficient ΔG to next event ===
+    # When glucose is flat, dG/dt hovers near zero causing spurious zero-crossings.
+    # Discard events where ΔG to the next MEAL event is < 5 mg/dL (noise threshold).
+    #
+    # IMPORTANT: If an event goes directly to a peak (not to another meal), keep it!
+    # Only discard if: goes_to_next_meal=True AND ΔG to next meal < threshold
+    MIN_DELTA_G_THRESHOLD = 5.0  # mg/dL
+
+    filtered_group_info = []
+    discarded_group_info = []  # Track discarded events for visualization
+    i = 0
+    while i < len(group_info):
+        info = group_info[i]
+
+        # If this event goes directly to a peak (not to another meal), keep it
+        # Only apply the ΔG filter when event goes to another meal first
+        if info["goes_to_next_meal"]:
+            # Check ΔG to next meal event
+            has_next_group = (i + 1) < len(group_info)
+            if has_next_group:
+                next_group_info = group_info[i + 1]
+                if info["start_glucose"] is not None and next_group_info["start_glucose"] is not None:
+                    delta_g_to_next_group = next_group_info["start_glucose"] - info["start_glucose"]
+
+                    if abs(delta_g_to_next_group) < MIN_DELTA_G_THRESHOLD:
+                        # Discard this event - insufficient glucose change to next meal event (noise)
+                        info["is_discarded"] = True
+                        info["discard_reason"] = f"ΔG to next meal ({delta_g_to_next_group:.1f}) < {MIN_DELTA_G_THRESHOLD}"
+                        discarded_group_info.append(info)
+                        i += 1
+                        continue
+
+        # For events that go directly to peak, only discard if total rise is very small
+        if not info["goes_to_next_meal"] and not info["is_no_peak"]:
+            if info["total_rise"] is not None:
+                if abs(info["total_rise"]) < MIN_DELTA_G_THRESHOLD:
+                    # Very small rise to peak - likely noise
+                    info["is_discarded"] = True
+                    info["discard_reason"] = f"Total rise to peak ({info['total_rise']:.1f}) < {MIN_DELTA_G_THRESHOLD}"
+                    discarded_group_info.append(info)
+                    i += 1
+                    continue
+
+        # This event is valid - keep it
+        info["is_discarded"] = False
+        filtered_group_info.append(info)
+        i += 1
+
+    # Re-index the filtered groups
+    for new_idx, info in enumerate(filtered_group_info):
+        info["group_idx"] = new_idx
+
+    group_info = filtered_group_info
+
+    # === STEP 4: Determine composite status for each group ===
+    # All groups that share the same peak AND have a distinct meal in between are composite
+    for i, info in enumerate(group_info):
+        if info["goes_to_next_meal"]:
+            info["is_composite"] = True
+
+            # Also mark the next group(s) that share the same peak as composite
+            if info["next_peak"]:
+                for j in range(i + 1, len(group_info)):
+                    next_info = group_info[j]
+                    if next_info["next_peak"] == info["next_peak"]:
+                        next_info["is_composite"] = True
+                    else:
+                        break
+
+    # === STEP 5: Create CompositeMealEvent objects ===
+    composite_events = []
+    for info in group_info:
+        is_clean = not info["is_composite"] and not info["is_no_peak"]
+        classification = "clean" if is_clean else ("no_peak" if info["is_no_peak"] else "composite")
 
         composite = CompositeMealEvent(
-            event_id=f"E_{i}",
-            start_time=seg["event_time"],
-            end_time=seg["event_time"],
-            peak_time=next_peak_within_window.detected_at if next_peak_within_window else None,
-            primary_event=event,
-            secondary_events=[],  # Not tracking secondary events separately anymore
-            glucose_at_start=seg["event_glucose"],
-            glucose_at_peak=next_peak_within_window.glucose_at_detection if next_peak_within_window else None,
-            total_glucose_rise=seg["delta_g"] if seg["segment_type"] in ("to_peak", "to_peak_merged") else None,
-            is_stacked=is_composite,  # True if multiple distinct meals share this peak
+            event_id=f"E_{info['group_idx']}",
+            start_time=info["start_time"],
+            end_time=info["end_time"],
+            peak_time=info["next_peak"].detected_at if info["next_peak"] else None,
+            primary_event=info["primary_event"],
+            secondary_events=info["secondary_events"],
+            glucose_at_start=info["start_glucose"],
+            glucose_at_peak=info["next_peak"].glucose_at_detection if info["next_peak"] else None,
+            total_glucose_rise=info["total_rise"],
+            is_stacked=info["is_composite"],
             is_clean=is_clean,
-            is_no_peak=is_no_peak,
+            is_no_peak=info["is_no_peak"],
             classification=classification,
-            time_to_peak_minutes=seg["time_to_peak"],
-            delta_g_to_next_event=delta_g_to_next_event,
-            next_event_time=next_event_time
+            time_to_peak_minutes=info["time_to_peak"],
+            delta_g_to_next_event=info["delta_g_to_next"],
+            next_event_time=info["next_event_time"]
         )
-
         composite_events.append(composite)
 
-    return sorted(composite_events, key=lambda c: c.start_time)
+    sorted_composite_events = sorted(composite_events, key=lambda c: c.start_time)
+
+    if return_discarded:
+        # Extract the primary events from discarded groups for visualization
+        discarded_events = [info["primary_event"] for info in discarded_group_info]
+        return sorted_composite_events, discarded_events
+
+    return sorted_composite_events

@@ -39,13 +39,19 @@ def load_meals_data(user_id: str) -> pd.DataFrame:
     df = pd.read_csv(meals_path)
 
     # Convert timestamp to datetime - handle both milliseconds and string formats
-    first_val = df["meal_timestamp"].iloc[0]
-    if isinstance(first_val, (int, float)) or (isinstance(first_val, str) and first_val.isdigit()):
-        # Milliseconds format
+    # Check if the column is numeric (includes numpy.int64, numpy.float64, etc.)
+    if pd.api.types.is_numeric_dtype(df["meal_timestamp"]):
+        # Milliseconds format (numeric)
         df["datetime"] = pd.to_datetime(df["meal_timestamp"], unit="ms", utc=True)
     else:
-        # String datetime format (e.g., "2024-10-25 22:12:50+05:30")
-        df["datetime"] = pd.to_datetime(df["meal_timestamp"], utc=True)
+        # String format - check if it's numeric string or datetime string
+        first_val = df["meal_timestamp"].iloc[0]
+        if isinstance(first_val, str) and first_val.isdigit():
+            # Numeric string (milliseconds)
+            df["datetime"] = pd.to_datetime(df["meal_timestamp"].astype(int), unit="ms", utc=True)
+        else:
+            # String datetime format (e.g., "2024-10-25 22:12:50+05:30")
+            df["datetime"] = pd.to_datetime(df["meal_timestamp"], utc=True)
 
     df["datetime_ist"] = df["datetime"].dt.tz_convert(IST)
     df["date"] = df["datetime_ist"].dt.date
@@ -63,6 +69,30 @@ def load_meals_data(user_id: str) -> pd.DataFrame:
 def get_available_dates(cgm_df: pd.DataFrame) -> list:
     """Get list of dates that have CGM data."""
     return sorted(cgm_df["date"].unique())
+
+
+def load_dietary_response_data(user_id: str) -> pd.DataFrame:
+    """
+    Load dietary response data for a user.
+
+    This data contains meal entries with CGM response metrics.
+    Timestamps are already in IST format (YYYY-MM-DD HH:MM:SS).
+    """
+    dietary_path = USER_DATA_PATH / user_id / "dietary_response.csv"
+
+    if not dietary_path.exists():
+        return pd.DataFrame()
+
+    df = pd.read_csv(dietary_path)
+
+    # Parse meal_timestamp (already in IST format)
+    df["datetime_ist"] = pd.to_datetime(df["meal_timestamp"])
+    # Localize to IST timezone
+    df["datetime_ist"] = df["datetime_ist"].dt.tz_localize(IST)
+    df["date"] = df["datetime_ist"].dt.date
+    df["time"] = df["datetime_ist"].dt.strftime("%H:%M:%S")
+
+    return df
 
 
 def filter_data_for_date(df: pd.DataFrame, selected_date, extend_hours: int = 2) -> pd.DataFrame:

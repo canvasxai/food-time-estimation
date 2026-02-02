@@ -24,6 +24,7 @@ from .data_loader import (
     get_available_users,
     load_cgm_data,
     load_meals_data,
+    load_dietary_response_data,
     get_available_dates,
     filter_data_for_date,
     USER_DATA_PATH,
@@ -75,6 +76,26 @@ from .visualization import (
     create_simple_cgm_plot
 )
 
+from .estimation import (
+    CleanMealRecord,
+    CleanCGMEvent,
+    SimilarityWeights,
+    extract_cgm_window,
+    collect_clean_meals,
+    collect_clean_cgm_events,
+    calculate_similarity_score,
+    calculate_shape_similarity_score,
+    find_most_similar_meal,
+    find_most_similar_cgm_event,
+    plot_meal_comparison,
+    plot_cgm_event_comparison,
+    normalize_cgm_curve,
+    add_starting_point,
+    run_estimation_analysis,
+    list_clean_meals,
+    list_clean_cgm_events
+)
+
 __all__ = [
     # Models
     'MealEvent',
@@ -85,6 +106,7 @@ __all__ = [
     'get_available_users',
     'load_cgm_data',
     'load_meals_data',
+    'load_dietary_response_data',
     'get_available_dates',
     'filter_data_for_date',
     'USER_DATA_PATH',
@@ -127,4 +149,15 @@ __all__ = [
     # Visualization
     'create_simplified_derivative_plot',
     'create_simple_cgm_plot',
+    # Estimation
+    'CleanMealRecord',
+    'SimilarityWeights',
+    'extract_cgm_window',
+    'collect_clean_meals',
+    'calculate_similarity_score',
+    'find_most_similar_meal',
+    'plot_meal_comparison',
+    'normalize_cgm_curve',
+    'run_estimation_analysis',
+    'list_clean_meals',
 ]

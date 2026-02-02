@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import List, Optional
 
-from .models import MealEvent, MealMatch, SimplifiedThresholds
+from .models import MealEvent, MealMatch, SimplifiedThresholds, CompositeMealEvent
 from .derivatives import apply_smoothing, calculate_first_derivative, calculate_second_derivative
 from .detection import detect_secondary_meal_events
 
@@ -15,7 +15,10 @@ from .detection import detect_secondary_meal_events
 def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEvent],
                                        thresholds: SimplifiedThresholds,
                                        matches: List[MealMatch] = None,
-                                       derived_meal_times: List = None) -> go.Figure:
+                                       derived_meal_times: List = None,
+                                       composite_events: List[CompositeMealEvent] = None,
+                                       discarded_events: List[MealEvent] = None,
+                                       dietary_response_df: pd.DataFrame = None) -> go.Figure:
     """
     Create a plot for the simplified detection method showing:
     1. Raw and smoothed glucose curves
@@ -23,6 +26,8 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
     3. Second derivative (d²G/dt²)
     4. Detected events marked
     5. Matched meal events annotated (if matches provided)
+    6. Merged meal events with mean time markers (if composite_events provided)
+    7. Discarded events shown in grey (if discarded_events provided)
     """
     df = cgm_df.sort_values("datetime_ist").copy().reset_index(drop=True)
 
@@ -168,58 +173,49 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
             row=3, col=1
         )
 
-    # Plot passing peaks (green) - peaks that pass dG/dt threshold
-    if passing_events:
-        passing_times = [e.detected_at for e in passing_events]
-        passing_glucose = [e.glucose_at_detection for e in passing_events]
-        passing_d2G = [e.d2G_dt2_at_detection for e in passing_events]
-        passing_dG = [e.dG_dt_at_detection for e in passing_events]
+    # Plot discarded meal events (grey) - events with insufficient ΔG
+    if discarded_events:
+        discarded_times = [e.detected_at for e in discarded_events]
+        discarded_glucose = [e.glucose_at_detection for e in discarded_events]
+        discarded_dG = [e.dG_dt_at_detection for e in discarded_events]
 
         fig.add_trace(
             go.Scatter(
-                x=passing_times,
-                y=passing_glucose,
+                x=discarded_times,
+                y=discarded_glucose,
                 mode="markers",
-                name="Est. Secondary Meal",
+                name="Discarded (insufficient ΔG)",
                 marker=dict(
-                    size=12,
-                    color="#27AE60",
-                    symbol="diamond",
-                    line=dict(color="white", width=1)
+                    size=10,
+                    color="#95A5A6",
+                    symbol="triangle-up-open",
+                    line=dict(color="#95A5A6", width=2)
                 ),
-                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>Glucose:</b> %{y:.1f} mg/dL<br><b>dG/dt:</b> %{customdata[0]:.4f}<br><b>d²G/dt²:</b> %{customdata[1]:.4f}<extra>Est. Secondary Meal</extra>",
-                customdata=list(zip(passing_dG, passing_d2G))
+                hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>Glucose:</b> %{y:.1f} mg/dL<br><b>dG/dt:</b> %{customdata:.4f}<br><b>Status:</b> Discarded (ΔG < 5 mg/dL)<extra></extra>",
+                customdata=discarded_dG
             ),
             row=1, col=1
         )
 
-        for event in passing_events:
-            sec_meal_time = event.detected_at
-            sec_meal_time_ms = int(sec_meal_time.timestamp() * 1000)
-            sec_meal_glucose = event.glucose_at_detection
-
-            for row in [1, 2, 3]:
-                fig.add_vline(
-                    x=sec_meal_time_ms,
-                    line_width=1.5,
-                    line_dash="dash",
-                    line_color="#27AE60",
-                    opacity=0.6,
-                    row=row, col=1
-                )
-
-            fig.add_annotation(
-                x=sec_meal_time_ms,
-                y=sec_meal_glucose + 8,
-                text=f"Est. Sec. Meal<br>{sec_meal_time.strftime('%H:%M')}",
-                showarrow=True,
-                arrowhead=2,
-                arrowcolor="#27AE60",
-                font=dict(size=9, color="#27AE60"),
-                row=1, col=1
+        # Add grey vertical lines on dG/dt plot for discarded events
+        for event in discarded_events:
+            event_time_ms = int(event.detected_at.timestamp() * 1000)
+            fig.add_vline(
+                x=event_time_ms,
+                line_width=1,
+                line_dash="dash",
+                line_color="#95A5A6",
+                opacity=0.5,
+                row=2, col=1
             )
 
-        # Add markers on d²G/dt² plot for passing peaks
+    # Plot passing peaks (green) - peaks that pass dG/dt threshold
+    # Only shown on d²G/dt² plot (row 3), removed from glucose plot to reduce clutter
+    if passing_events:
+        passing_times = [e.detected_at for e in passing_events]
+        passing_d2G = [e.d2G_dt2_at_detection for e in passing_events]
+
+        # Add markers on d²G/dt² plot only
         fig.add_trace(
             go.Scatter(
                 x=passing_times,
@@ -232,7 +228,6 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                     symbol="diamond",
                     line=dict(color="white", width=1)
                 ),
-                showlegend=False,
                 hovertemplate="<b>Time:</b> %{x|%H:%M}<br><b>d²G/dt²:</b> %{y:.4f} mg/dL/min²<extra>Est. Secondary Meal</extra>"
             ),
             row=3, col=1
@@ -323,46 +318,45 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
     y_max = df["value"].max()
     annotation_offset = 0
 
+    # Build a set of event times that are part of merged groups (for lighter rendering)
+    merged_event_times = set()
+    merged_group_info = {}  # Maps composite event_id to info about the merged group
+
+    if composite_events:
+        for comp in composite_events:
+            # Check if this composite event has secondary events (i.e., it's a merged group)
+            if comp.secondary_events and len(comp.secondary_events) > 0:
+                # Store the merged mean time and individual event times
+                merged_group_info[comp.event_id] = {
+                    "mean_time": comp.start_time,  # This is now the mean time
+                    "primary_event": comp.primary_event,
+                    "secondary_events": comp.secondary_events,
+                    "glucose": comp.glucose_at_start
+                }
+                # Mark individual event times as merged
+                merged_event_times.add(comp.primary_event.detected_at)
+                for sec in comp.secondary_events:
+                    merged_event_times.add(sec.detected_at)
+
+    # Draw vertical lines for events
+    # - PEAK: vertical lines on all plots
+    # - MEAL_START: vertical lines only on dG/dt plot (row 2) to show zero-crossings
     for event in events:
         color = event_colors.get(event.event_type, "#333333")
         event_time_ms = int(event.detected_at.timestamp() * 1000)
 
-        for row in [1, 2, 3]:
-            fig.add_vline(
-                x=event_time_ms,
-                line_width=2,
-                line_dash="solid" if event.event_type == "MEAL_START" else "dot",
-                line_color=color,
-                opacity=0.7,
-                row=row, col=1
-            )
-
-        if event.event_type == "MEAL_START" and event.estimated_meal_time:
-            est_meal_time_ms = int(event.estimated_meal_time.timestamp() * 1000)
-
+        if event.event_type == "PEAK":
+            # Peak lines on all plots
             for row in [1, 2, 3]:
                 fig.add_vline(
-                    x=est_meal_time_ms,
+                    x=event_time_ms,
                     line_width=2,
-                    line_dash="solid",
-                    line_color="#27AE60",
-                    opacity=0.8,
+                    line_dash="dot",
+                    line_color=color,
+                    opacity=0.7,
                     row=row, col=1
                 )
 
-            fig.add_annotation(
-                x=est_meal_time_ms,
-                y=y_max + 15 + annotation_offset,
-                text=f"Est. Meal<br>{event.estimated_meal_time.strftime('%H:%M')}",
-                showarrow=True,
-                arrowhead=2,
-                arrowcolor="#27AE60",
-                font=dict(size=10, color="#27AE60", weight="bold"),
-                row=1, col=1
-            )
-            annotation_offset += 25
-
-        elif event.event_type == "PEAK":
             fig.add_annotation(
                 x=event_time_ms,
                 y=event.glucose_at_detection + 10,
@@ -374,25 +368,135 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                 row=1, col=1
             )
 
-    # Add glucose rise annotations from matches with clean/composite classification
+        elif event.event_type == "MEAL_START":
+            # Meal start lines only on dG/dt plot (row 2) to show zero-crossings
+            is_merged = event.detected_at in merged_event_times
+            fig.add_vline(
+                x=event_time_ms,
+                line_width=1 if is_merged else 2,
+                line_dash="solid",
+                line_color=color,
+                opacity=0.4 if is_merged else 0.7,
+                row=2, col=1
+            )
+
+    # Add merged meal time markers (circle at mean time) - markers only, no vertical lines
+    if merged_group_info:
+        merged_times = []
+        merged_glucose_values = []
+        merged_labels = []
+
+        for event_id, info in merged_group_info.items():
+            mean_time = info["mean_time"]
+            # Get glucose at mean time by interpolating from CGM data
+            time_diffs = abs(df["datetime_ist"] - mean_time)
+            closest_idx = time_diffs.idxmin()
+            glucose_at_mean = df.loc[closest_idx, "value"]
+
+            merged_times.append(mean_time)
+            merged_glucose_values.append(glucose_at_mean)
+            num_merged = 1 + len(info["secondary_events"])
+            merged_labels.append(f"Merged ({num_merged} events)")
+
+        # Add circle markers for merged meal times on glucose plot (no vertical lines)
+        fig.add_trace(
+            go.Scatter(
+                x=merged_times,
+                y=merged_glucose_values,
+                mode="markers",
+                name="Merged Meal Time",
+                marker=dict(
+                    size=16,
+                    color="#27AE60",
+                    symbol="circle",
+                    line=dict(color="white", width=2)
+                ),
+                hovertemplate="<b>Merged Meal Time</b><br>Time: %{x|%H:%M}<br>Glucose: %{y:.1f} mg/dL<br>%{customdata}<extra></extra>",
+                customdata=merged_labels
+            ),
+            row=1, col=1
+        )
+        # Note: Removed vertical lines and annotations for merged meals to reduce clutter
+
+    # Add markers for meal events with classification info in hover (no visible labels)
+    if composite_events:
+        meal_times = []
+        meal_glucose = []
+        meal_hover_texts = []
+        meal_colors = []
+        meal_symbols = []
+
+        for comp in composite_events:
+            # Determine classification label and color
+            if comp.is_clean:
+                label = "✅ Clean"
+                color = "#2ECC71"  # Green
+                symbol = "circle"
+            elif comp.is_no_peak:
+                label = "⚠️ No Peak"
+                color = "#E67E22"  # Orange
+                symbol = "diamond"
+            else:
+                label = "⚡ Composite"
+                color = "#9B59B6"  # Purple
+                symbol = "square"
+
+            glucose_at_event = comp.glucose_at_start if comp.glucose_at_start else df["value"].mean()
+
+            meal_times.append(comp.start_time)
+            meal_glucose.append(glucose_at_event)
+            meal_colors.append(color)
+            meal_symbols.append(symbol)
+
+            # Build hover text with all classification details
+            hover_parts = [
+                f"<b>{comp.event_id}: {label}</b>",
+                f"Time: {comp.start_time.strftime('%H:%M')}",
+                f"Glucose: {glucose_at_event:.0f} mg/dL"
+            ]
+
+            if comp.peak_time:
+                hover_parts.append(f"Peak at: {comp.peak_time.strftime('%H:%M')}")
+            if comp.time_to_peak_minutes:
+                hover_parts.append(f"Time to peak: {comp.time_to_peak_minutes:.0f} min")
+            if comp.total_glucose_rise is not None:
+                hover_parts.append(f"Glucose rise: +{comp.total_glucose_rise:.0f} mg/dL")
+            if comp.secondary_events and len(comp.secondary_events) > 0:
+                hover_parts.append(f"Merged events: {1 + len(comp.secondary_events)}")
+            if comp.delta_g_to_next_event is not None:
+                hover_parts.append(f"ΔG to next: +{comp.delta_g_to_next_event:.0f} mg/dL")
+
+            meal_hover_texts.append("<br>".join(hover_parts))
+
+        # Add markers for meal events (classification visible on hover only)
+        fig.add_trace(
+            go.Scatter(
+                x=meal_times,
+                y=meal_glucose,
+                mode="markers",
+                name="Meal Events",
+                marker=dict(
+                    size=12,
+                    color=meal_colors,
+                    symbol="triangle-up",
+                    line=dict(color="white", width=1)
+                ),
+                hovertemplate="%{customdata}<extra></extra>",
+                customdata=meal_hover_texts
+            ),
+            row=1, col=1
+        )
+
+    # Add glucose rise annotations from matches
     if matches:
         for match in matches:
             event_time_ms = int(match.event_time.timestamp() * 1000)
 
-            # Determine event classification styling
-            if match.is_clean_event:
-                event_label = "Clean"
-                event_border_color = "#2ECC71"  # Green for clean
-            else:
-                event_label = "Composite"
-                event_border_color = "#9B59B6"  # Purple for composite
-
             if match.glucose_rise is not None and match.glucose_at_start is not None and match.glucose_at_peak is not None:
-                # Add shaded region between start and peak
                 if match.peak_time:
                     peak_time_ms = int(match.peak_time.timestamp() * 1000)
 
-                    # Add annotation showing the rise amount and classification
+                    # Add annotation showing the rise amount
                     rise_color = "#E74C3C" if match.glucose_rise > 50 else "#F39C12" if match.glucose_rise > 30 else "#27AE60"
 
                     # Build annotation text
@@ -407,19 +511,6 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                         showarrow=False,
                         font=dict(size=10, color=rise_color, weight="bold"),
                         bgcolor="rgba(255,255,255,0.8)",
-                        row=1, col=1
-                    )
-
-                    # Add classification label at event start
-                    fig.add_annotation(
-                        x=event_time_ms,
-                        y=match.glucose_at_start - 8,
-                        text=event_label,
-                        showarrow=False,
-                        font=dict(size=8, color=event_border_color),
-                        bgcolor="rgba(255,255,255,0.7)",
-                        bordercolor=event_border_color,
-                        borderwidth=1,
                         row=1, col=1
                     )
 
@@ -468,19 +559,121 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
                 ),
                 row=1, col=1
             )
+            # Note: Removed vertical lines for derived meal times to reduce clutter
 
-            # Add vertical lines for derived meal times
-            for dmt in derived_times:
-                dmt_ms = int(dmt.timestamp() * 1000)
-                for row in [1, 2, 3]:
-                    fig.add_vline(
-                        x=dmt_ms,
-                        line_width=1.5,
-                        line_dash="dot",
-                        line_color="#E74C3C",
-                        opacity=0.5,
-                        row=row, col=1
-                    )
+    # Plot dietary response times as X markers and before/after meal glucose curves
+    if dietary_response_df is not None and len(dietary_response_df) > 0:
+        from datetime import timedelta
+
+        dietary_times = []
+        dietary_glucose = []
+        dietary_hover_texts = []
+
+        # Time offsets for before/after meal readings (in minutes)
+        # beforemeal_0 = T-60, beforemeal_1 = T-45, beforemeal_2 = T-30, beforemeal_3 = T-15
+        # postmeal_0 = T+15, postmeal_1 = T+30, ..., postmeal_7 = T+120
+        time_offsets = {
+            'beforemeal_0': -60, 'beforemeal_1': -45, 'beforemeal_2': -30, 'beforemeal_3': -15,
+            'postmeal_0': 15, 'postmeal_1': 30, 'postmeal_2': 45, 'postmeal_3': 60,
+            'postmeal_4': 75, 'postmeal_5': 90, 'postmeal_6': 105, 'postmeal_7': 120
+        }
+
+        for _, row in dietary_response_df.iterrows():
+            diet_time = row["datetime_ist"]
+            if pd.isna(diet_time):
+                continue
+
+            # Find the closest CGM reading to get approximate glucose value
+            time_diffs = abs(df["datetime_ist"] - diet_time)
+            closest_idx = time_diffs.idxmin()
+            glucose_val = df.loc[closest_idx, "value"]
+
+            dietary_times.append(diet_time)
+            dietary_glucose.append(glucose_val)
+
+            # Build hover text with dietary values
+            hover_parts = [
+                f"<b>Dietary Response Data</b>",
+                f"Time: {diet_time.strftime('%H:%M')}",
+                f"Glucose: {glucose_val:.1f} mg/dL",
+                f"<b>--- Nutritional Info ---</b>",
+                f"Calories: {row.get('Heat', 'N/A'):.1f} kcal" if pd.notna(row.get('Heat')) else "Calories: N/A",
+                f"Carbs: {row.get('Carbohydrate', 'N/A'):.1f} g" if pd.notna(row.get('Carbohydrate')) else "Carbs: N/A",
+                f"Protein: {row.get('Protein', 'N/A'):.1f} g" if pd.notna(row.get('Protein')) else "Protein: N/A",
+                f"Fat: {row.get('Fat', 'N/A'):.1f} g" if pd.notna(row.get('Fat')) else "Fat: N/A",
+                f"Fiber: {row.get('DietaryFiber', 'N/A'):.1f} g" if pd.notna(row.get('DietaryFiber')) else "Fiber: N/A",
+            ]
+
+            # Add CGM response metrics if available
+            if pd.notna(row.get('DeltaMax_G')):
+                hover_parts.append(f"<b>--- CGM Response ---</b>")
+                hover_parts.append(f"ΔG Max: +{row.get('DeltaMax_G', 0):.1f} mg/dL")
+            if pd.notna(row.get('postmeal_max')):
+                hover_parts.append(f"Peak Glucose: {row.get('postmeal_max', 0):.1f} mg/dL")
+            if pd.notna(row.get('postmeal_maxtime')):
+                hover_parts.append(f"Time to Peak: {row.get('postmeal_maxtime', 0):.0f} intervals")
+
+            dietary_hover_texts.append("<br>".join(hover_parts))
+
+            # Plot before/after meal glucose curve for this meal
+            curve_times = []
+            curve_glucose = []
+            curve_hover = []
+
+            for col, offset_min in time_offsets.items():
+                if col in row and pd.notna(row[col]):
+                    point_time = diet_time + timedelta(minutes=offset_min)
+                    curve_times.append(point_time)
+                    curve_glucose.append(row[col])
+
+                    # Determine label for hover
+                    if offset_min < 0:
+                        label = f"T{offset_min} min (before meal)"
+                    else:
+                        label = f"T+{offset_min} min (after meal)"
+
+                    curve_hover.append(f"<b>{label}</b><br>Time: {point_time.strftime('%H:%M')}<br>Glucose: {row[col]:.1f} mg/dL")
+
+            if curve_times:
+                # Add the glucose curve trace for this meal
+                # Show legend only for first curve
+                show_legend = (len(dietary_times) == 1)  # First meal being processed
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=curve_times,
+                        y=curve_glucose,
+                        mode="lines+markers",
+                        name="Dataset CGM Window",
+                        line=dict(color="#8E44AD", width=2, dash="dash"),
+                        marker=dict(size=6, color="#8E44AD", symbol="circle"),
+                        hovertemplate="%{customdata}<extra></extra>",
+                        customdata=curve_hover,
+                        legendgroup="dietary_curves",
+                        showlegend=show_legend
+                    ),
+                    row=1, col=1
+                )
+
+        if dietary_times:
+            # Plot X marker at the meal time (thinner, more visible)
+            fig.add_trace(
+                go.Scatter(
+                    x=dietary_times,
+                    y=dietary_glucose,
+                    mode="markers",
+                    name="Dietary Response (Dataset)",
+                    marker=dict(
+                        size=14,
+                        color="#8E44AD",  # Purple color
+                        symbol="x-thin",  # Thinner X marker
+                        line=dict(color="#8E44AD", width=2)
+                    ),
+                    hovertemplate="%{customdata}<extra></extra>",
+                    customdata=dietary_hover_texts
+                ),
+                row=1, col=1
+            )
 
     # Update layout
     fig.update_layout(
@@ -491,7 +684,12 @@ def create_simplified_derivative_plot(cgm_df: pd.DataFrame, events: List[MealEve
     )
 
     fig.update_xaxes(tickformat="%H:%M", dtick=3600000 * 2, row=3, col=1)
-    fig.update_yaxes(title_text="Glucose (mg/dL)", row=1, col=1)
+
+    # Set dynamic y-axis range for glucose plot (min - 20, max + 20)
+    glucose_min = df["value"].min() - 20
+    glucose_max = df["value"].max() + 20
+    fig.update_yaxes(title_text="Glucose (mg/dL)", range=[glucose_min, glucose_max], row=1, col=1)
+
     fig.update_yaxes(title_text="dG/dt (mg/dL/min)", row=2, col=1)
     fig.update_yaxes(title_text="d²G/dt² (mg/dL/min²)", row=3, col=1)
 
