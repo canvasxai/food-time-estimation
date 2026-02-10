@@ -38,7 +38,9 @@ test_estimation.py
 split_by_user.sh
 
 # Estimation module (if not needed in repo)
-cgm_analysis/estimation.py
+#cgm_analysis/estimation.py
 
 # Dietary response data
 user_data/*/dietary_response.csv
+
+.dev-memory/
